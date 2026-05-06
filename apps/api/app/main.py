@@ -22,12 +22,17 @@ log = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup / shutdown hooks."""
+    import asyncio
+
     log.info("app.startup", env=settings.app_env, version=__version__)
     if settings.app_env == "development":
         # En dev creamos tablas si no existen. En prod usar Alembic.
+        # Con timeout corto: si Postgres no responde, app arranca igual.
         try:
-            init_db()
+            await asyncio.wait_for(asyncio.to_thread(init_db), timeout=5.0)
             log.info("db.init.ok")
+        except TimeoutError:
+            log.warning("db.init.timeout", hint="¿Postgres arrancado? `docker compose up -d`")
         except Exception as e:
             log.warning("db.init.failed", error=str(e))
     yield

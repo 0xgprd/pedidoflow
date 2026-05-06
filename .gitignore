@@ -33,6 +33,9 @@ build/
 apps/web/dist/
 apps/web/.vite/
 
+# TS incremental build cache
+*.tsbuildinfo
+
 # Env / secrets
 .env
 .env.local

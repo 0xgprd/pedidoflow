@@ -29,12 +29,18 @@ def session_fixture() -> Generator[Session, None, None]:
 
 @pytest.fixture(name="client")
 def client_fixture(session: Session) -> Generator[TestClient, None, None]:
-    """TestClient con DB override apuntando a SQLite test."""
+    """TestClient con DB override apuntando a SQLite test.
+
+    Nota: usamos TestClient SIN context manager (no `with`) para evitar
+    que se dispare el lifespan, que intentaría conectar a Postgres real.
+    """
 
     def override_get_session() -> Generator[Session, None, None]:
         yield session
 
     app.dependency_overrides[get_session] = override_get_session
-    with TestClient(app) as c:
-        yield c
-    app.dependency_overrides.clear()
+    client = TestClient(app)
+    try:
+        yield client
+    finally:
+        app.dependency_overrides.clear()
