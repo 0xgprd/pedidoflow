@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+*.egg
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Node
+node_modules/
+.pnpm-store/
+.next/
+.nuxt/
+dist/
+build/
+.turbo/
+.cache/
+*.log
+
+# Frontend builds
+apps/web/dist/
+apps/web/.vite/
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-data/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+
+# Test artifacts
+coverage/
+*.lcov
+
+# Migrations local data
+postgres-data/
+redis-data/
+
+# PDFs locales (test)
+sample_pdfs/*.pdf
+!sample_pdfs/.gitkeep
+
+# Claude
+.claude/cache/
