@@ -45,7 +45,7 @@ import { cn } from "@/lib/utils";
 const STATUS_BADGE: Record<DocumentStatus, string> = {
   pending: "bg-slate-200 text-slate-800",
   processing: "bg-blue-200 text-blue-900 animate-pulse",
-  extracted: "bg-emerald-200 text-emerald-900",
+  extracted: "bg-slate-100 text-slate-700",
   failed: "bg-red-200 text-red-900",
   approved: "bg-green-300 text-green-900",
   rejected: "bg-zinc-300 text-zinc-800",

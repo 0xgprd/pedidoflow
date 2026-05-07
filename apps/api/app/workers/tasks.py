@@ -220,8 +220,14 @@ def extract_document(self, document_id: str) -> dict:
 
     # 7. Si es PEDIDO, intentar vincular con una oferta del tenant
     matched: dict[str, Any] | None = None
+    expanded: dict[str, Any] | None = None
     if detected_type == DocumentType.PEDIDO:
         matched = _try_link_order_to_offer(doc_uuid, mapped_extracted, tenant_id)
+        # 7b. Si la oferta vinculada existe Y el pedido tiene 1 línea-resumen
+        # cuyo total cuadra con la oferta, expandir las líneas del pedido con
+        # las refs reales de la oferta para poder pushearlas a Sage.
+        if matched is not None:
+            expanded = _maybe_expand_lines_from_offer(doc_uuid, UUID(matched["offer_id"]))
 
     log.info(
         "task.extract_document.ok",
@@ -231,6 +237,7 @@ def extract_document(self, document_id: str) -> dict:
         mappings_applied=len(hit_ids),
         document_type=detected_type.value,
         matched_offer=matched["offer_id"] if matched else None,
+        lines_expanded=expanded["expanded_to"] if expanded else None,
     )
     return {
         "status": "extracted",
@@ -240,6 +247,7 @@ def extract_document(self, document_id: str) -> dict:
         "mappings_applied": len(hit_ids),
         "document_type": detected_type.value,
         "matched_offer": matched,
+        "lines_expanded_from_offer": expanded,
     }
 
 
@@ -305,6 +313,142 @@ def _try_link_order_to_offer(
             "strategy": strategy.value,
             "score": score,
         }
+
+
+# Tolerancia entre el total del pedido (1 línea-resumen) y la suma de
+# importes de la oferta. Si la diferencia relativa es menor → expandimos.
+EXPAND_TOTAL_TOLERANCE = 0.01  # 1%
+
+
+def _line_amount(line: dict[str, Any]) -> float:
+    """Importe efectivo de una línea: importe_linea o cantidad×precio."""
+    importe = line.get("importe_linea")
+    if importe is not None:
+        try:
+            return float(importe)
+        except (TypeError, ValueError):
+            return 0.0
+    cantidad = line.get("cantidad") or 0
+    precio = line.get("precio_unitario") or 0
+    try:
+        return float(cantidad) * float(precio)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _maybe_expand_lines_from_offer(
+    order_doc_id: UUID,
+    offer_doc_id: UUID,
+    *,
+    session: Session | None = None,
+) -> dict[str, Any] | None:
+    """Si el pedido tiene 1 línea-resumen y su total cuadra con la oferta,
+    reemplaza las líneas del pedido por las de la oferta.
+
+    Caso típico: el cliente envía un pedido escrito a mano que dice solo
+    "Según oferta TL260417-113, total 1234,00€" en una sola línea. Sin esto
+    no podemos pushear refs reales a Sage 200.
+
+    `session` opcional para tests; en producción abre uno nuevo.
+    Devuelve `{expanded_to, order_total, offer_total, offer_id}` o None.
+    """
+    if session is None:
+        with Session(engine) as new_session:
+            return _maybe_expand_lines_from_offer(order_doc_id, offer_doc_id, session=new_session)
+
+    order = session.get(Document, order_doc_id)
+    offer = session.get(Document, offer_doc_id)
+    if order is None or offer is None:
+        return None
+
+    order_data = dict(order.extracted_json or {})
+    offer_data = offer.extracted_json or {}
+
+    order_lines: list[dict[str, Any]] = list(order_data.get("lineas") or [])
+    offer_lines: list[dict[str, Any]] = list(offer_data.get("lineas") or [])
+
+    # Solo aplica si el pedido tiene exactamente 1 línea
+    if len(order_lines) != 1:
+        return None
+    # Y la oferta tiene 2+ líneas (sino no expandimos nada útil)
+    if len(offer_lines) < 2:
+        return None
+
+    # Total del pedido — preferimos subtotal_ht (sin IVA, sin transporte)
+    order_total_raw = (order_data.get("totales") or {}).get("subtotal_ht")
+    if order_total_raw is None:
+        # Fallback: sumar la única línea (que típicamente lleva el total)
+        order_total_raw = _line_amount(order_lines[0])
+    try:
+        order_total = float(order_total_raw)
+    except (TypeError, ValueError):
+        return None
+    if order_total <= 0:
+        return None
+
+    # Total de la oferta = suma de importes de líneas (no usar totales.subtotal_ht
+    # de la oferta porque puede incluir transporte; queremos solo el material).
+    offer_total = sum(_line_amount(line) for line in offer_lines)
+    if offer_total <= 0:
+        return None
+
+    # Tolerancia 1%
+    rel_diff = abs(order_total - offer_total) / max(order_total, offer_total)
+    if rel_diff > EXPAND_TOTAL_TOLERANCE:
+        log.info(
+            "expand.totals_mismatch",
+            order_id=str(order_doc_id),
+            offer_id=str(offer_doc_id),
+            order_total=order_total,
+            offer_total=offer_total,
+            rel_diff=round(rel_diff, 4),
+        )
+        return None
+
+    # ¡Match! Expandimos las líneas del pedido con las de la oferta.
+    original_line = order_lines[0]
+    order_data["lineas"] = [dict(line) for line in offer_lines]
+    order_data["lines_expanded_from_offer"] = {
+        "offer_id": str(offer_doc_id),
+        "original_line_count": 1,
+        "expanded_to": len(offer_lines),
+        "order_total": order_total,
+        "offer_total": offer_total,
+        "original_line_description": original_line.get("descripcion"),
+    }
+
+    # Re-validar contra catálogo (las nuevas líneas pueden disparar bloqueos)
+    catalog = list(
+        session.exec(select(CatalogItem).where(CatalogItem.tenant_id == order.tenant_id)).all()
+    )
+    order_data["validation"] = validate_against_catalog(order_data, catalog)
+    # Recalcular flag has_blocking_issues con la nueva validation
+    new_blocking = ((order_data.get("validation") or {}).get("summary") or {}).get(
+        "blocking", 0
+    ) > 0
+    # Mantenemos workflow.blocked previo si existía
+    wf_blocked = bool((order_data.get("workflow") or {}).get("blocked"))
+    order.has_blocking_issues = new_blocking or wf_blocked
+
+    order.extracted_json = order_data
+    order.updated_at = datetime.now(UTC)
+    session.add(order)
+    session.commit()
+
+    log.info(
+        "expand.lines_from_offer.ok",
+        order_id=str(order_doc_id),
+        offer_id=str(offer_doc_id),
+        expanded_to=len(offer_lines),
+        order_total=order_total,
+        offer_total=offer_total,
+    )
+    return {
+        "offer_id": str(offer_doc_id),
+        "expanded_to": len(offer_lines),
+        "order_total": order_total,
+        "offer_total": offer_total,
+    }
 
 
 # =============================================================================
