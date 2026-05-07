@@ -28,10 +28,7 @@ COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini ./
 
-# Healthcheck (Railway lo usa para saber si el servicio está vivo)
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD curl -fsS "http://localhost:${PORT:-8080}/api/v1/health" || exit 1
-
-# Railway inyecta $PORT. Aplicamos migraciones antes de arrancar.
-# Usar shell form para que $PORT se expanda correctamente.
-CMD alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'
+# Railway inyecta $PORT. Arranca uvicorn directamente — las migraciones Alembic
+# se aplican manualmente via MCP Supabase (la baseline + índices ya están en DB).
+# Si añades una nueva migración: aplícala a Supabase ANTES de hacer push aquí.
+CMD uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'
