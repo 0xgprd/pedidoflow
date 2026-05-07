@@ -194,6 +194,14 @@ def extract_document(self, document_id: str) -> dict:
     )
 
     # 6. Persistir ocr_result + extracted_json + tipo + incrementar hits
+    # Las ofertas no requieren validación humana (son catálogo pasivo: los
+    # comerciales las mandan en copia para que el matching pedido↔oferta funcione).
+    # Auto-aprobamos para que no aparezcan en la bandeja como "Pendiente".
+    final_status = (
+        DocumentStatus.APPROVED
+        if detected_type == DocumentType.OFERTA
+        else DocumentStatus.EXTRACTED
+    )
     with Session(engine) as session:
         doc = session.get(Document, doc_uuid)
         if doc is None:
@@ -202,7 +210,7 @@ def extract_document(self, document_id: str) -> dict:
         doc.raw_text = markdown
         doc.extracted_json = mapped_extracted
         doc.document_type = detected_type
-        doc.status = DocumentStatus.EXTRACTED
+        doc.status = final_status
         doc.has_blocking_issues = has_blocking
         doc.processed_at = datetime.now(UTC)
         doc.updated_at = doc.processed_at

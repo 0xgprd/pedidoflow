@@ -394,40 +394,49 @@ export function DocumentDetail() {
           ) : (
             <span className="text-sm text-muted-foreground">Click sobre cualquier campo para editarlo.</span>
           )}
-          <div className="ml-auto flex gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              className="border-red-300 text-red-700 hover:bg-red-50"
-              onClick={handleReject}
-              disabled={saving}
-            >
-              <X className="h-4 w-4 mr-1" /> Rechazar
-            </Button>
-            <Button
-              size="sm"
-              className={cn(
-                "text-white",
-                draft.workflow?.blocked
-                  ? "bg-zinc-400 hover:bg-zinc-400 cursor-not-allowed"
-                  : "bg-emerald-600 hover:bg-emerald-700",
-              )}
-              onClick={handleApprove}
-              disabled={saving || !!draft.workflow?.blocked}
-              title={
-                draft.workflow?.blocked
-                  ? "Aprobación bloqueada por regla(s) workflow"
-                  : "Aprobar pedido"
-              }
-            >
-              {draft.workflow?.blocked ? (
-                <ShieldX className="h-4 w-4 mr-1" />
-              ) : (
-                <Check className="h-4 w-4 mr-1" />
-              )}
-              {draft.workflow?.blocked ? "Bloqueado" : "Aprobar"}
-            </Button>
-          </div>
+          {/* Las ofertas son catálogo pasivo (auto-aprobadas), no requieren
+              decisión humana. Sólo pedidos muestran los botones aprobar/rechazar. */}
+          {doc.document_type === "pedido" && (
+            <div className="ml-auto flex gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                className="border-red-300 text-red-700 hover:bg-red-50"
+                onClick={handleReject}
+                disabled={saving}
+              >
+                <X className="h-4 w-4 mr-1" /> Rechazar
+              </Button>
+              <Button
+                size="sm"
+                className={cn(
+                  "text-white",
+                  draft.workflow?.blocked
+                    ? "bg-zinc-400 hover:bg-zinc-400 cursor-not-allowed"
+                    : "bg-emerald-600 hover:bg-emerald-700",
+                )}
+                onClick={handleApprove}
+                disabled={saving || !!draft.workflow?.blocked}
+                title={
+                  draft.workflow?.blocked
+                    ? "Aprobación bloqueada por regla(s) workflow"
+                    : "Aprobar pedido"
+                }
+              >
+                {draft.workflow?.blocked ? (
+                  <ShieldX className="h-4 w-4 mr-1" />
+                ) : (
+                  <Check className="h-4 w-4 mr-1" />
+                )}
+                {draft.workflow?.blocked ? "Bloqueado" : "Aprobar"}
+              </Button>
+            </div>
+          )}
+          {doc.document_type === "oferta" && (
+            <div className="ml-auto text-xs text-muted-foreground italic">
+              Las ofertas se almacenan automáticamente — sin acción requerida.
+            </div>
+          )}
         </div>
       )}
 

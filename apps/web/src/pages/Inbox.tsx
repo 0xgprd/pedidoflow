@@ -99,7 +99,9 @@ export function Inbox() {
   const [error, setError] = useState<string | null>(null);
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("pending");
-  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
+  // Por defecto solo pedidos. Las ofertas son catálogo pasivo (auto-aprobadas
+  // al extraerse) y aparecen sólo si el user filtra por type=oferta.
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("pedido");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async (silent = false) => {
@@ -197,8 +199,18 @@ export function Inbox() {
         <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-900">{error}</div>
       )}
 
-      {/* Tabs primarios — por estado */}
-      <StatusTabs value={statusFilter} onChange={setStatusFilter} docs={docs} />
+      {/* Tabs primarios — por estado. Conteos respetan el filtro de tipo
+          (si typeFilter=pedido, los conteos de pendientes/aprobados/etc.
+          excluyen ofertas). */}
+      <StatusTabs
+        value={statusFilter}
+        onChange={setStatusFilter}
+        docs={
+          typeFilter === "all"
+            ? docs
+            : docs.filter((d) => (d.document_type ?? "desconocido") === typeFilter)
+        }
+      />
 
       {/* Filtro secundario — chips por tipo */}
       <TypeChips value={typeFilter} onChange={setTypeFilter} docs={docs} statusFilter={statusFilter} />

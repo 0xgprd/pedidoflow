@@ -411,6 +411,9 @@ def reclassify_all(
         if new_type != doc.document_type:
             doc.document_type = new_type
             doc.updated_at = datetime.now(UTC)
+            # Si pasa a OFERTA, auto-aprobar (catálogo pasivo, sin validación)
+            if new_type == DocumentType.OFERTA and doc.status == DocumentStatus.EXTRACTED:
+                doc.status = DocumentStatus.APPROVED
             session.add(doc)
             changed += 1
             if new_type == DocumentType.PEDIDO:
