@@ -99,9 +99,7 @@ export function Inbox() {
   const [error, setError] = useState<string | null>(null);
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("pending");
-  // Por defecto solo pedidos. Las ofertas son catálogo pasivo (auto-aprobadas
-  // al extraerse) y aparecen sólo si el user filtra por type=oferta.
-  const [typeFilter, setTypeFilter] = useState<TypeFilter>("pedido");
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async (silent = false) => {
