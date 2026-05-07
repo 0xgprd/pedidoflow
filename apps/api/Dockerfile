@@ -1,5 +1,6 @@
 # Backend Order Flow — imagen Python para Railway/Docker.
 # Railway prefiere este Dockerfile sobre Nixpacks cuando ambos existen.
+# rebuild-trigger: 2026-05-07-fix-config-parents
 
 FROM python:3.12-slim
 
