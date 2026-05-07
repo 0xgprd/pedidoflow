@@ -137,8 +137,13 @@ def get_storage_service() -> StorageBackend:
         )
         log.info("storage.backend.s3", bucket=settings.s3_bucket)
     else:
-        # Raíz del repo / storage_local
-        root = Path(__file__).resolve().parents[4] / "storage_local"
+        # Raíz del repo / storage_local en local. En Docker (Railway) no hay
+        # 4 niveles arriba — usamos /tmp/storage_local como fallback.
+        parents = Path(__file__).resolve().parents
+        if len(parents) > 4:
+            root = parents[4] / "storage_local"
+        else:
+            root = Path("/tmp/storage_local")
         _storage_singleton = LocalStorageBackend(root=root)
         log.info("storage.backend.local", root=str(root))
 
