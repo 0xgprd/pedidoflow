@@ -13,10 +13,9 @@ celery_app = Celery(
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
     include=[
-        # Aquí se registrarán los módulos con tasks (Fase 1+).
-        # "app.workers.extraction",
-        # "app.workers.embeddings",
-        # "app.workers.sage",
+        "app.workers.tasks",
+        # "app.workers.embeddings",  # Fase 2
+        # "app.workers.sage",        # Fase 5
     ],
 )
 
@@ -31,4 +30,13 @@ celery_app.conf.update(
     task_soft_time_limit=540,   # 9 min soft limit
     worker_prefetch_multiplier=1,
     worker_max_tasks_per_child=50,
+    task_always_eager=settings.celery_task_always_eager,
+    task_eager_propagates=settings.celery_task_always_eager,
+    # Beat schedule (cron): poll todas las integraciones Outlook cada 5 min
+    beat_schedule={
+        "poll-outlook-every-5min": {
+            "task": "app.workers.tasks.poll_all_outlook_integrations",
+            "schedule": 300.0,  # segundos
+        },
+    },
 )

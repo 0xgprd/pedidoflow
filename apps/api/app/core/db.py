@@ -9,7 +9,11 @@ from app.core.config import settings
 engine = create_engine(
     settings.database_url,
     echo=settings.database_echo,
-    pool_pre_ping=True,
+    # pool_pre_ping añade un SELECT 1 a cada checkout — útil contra conexiones
+    # huérfanas pero penaliza ~100-200ms por request en latencia alta (Supabase
+    # EU desde España). Lo dejamos OFF y reciclamos cada 30 min.
+    pool_pre_ping=False,
+    pool_recycle=1800,
     pool_size=10,
     max_overflow=20,
 )

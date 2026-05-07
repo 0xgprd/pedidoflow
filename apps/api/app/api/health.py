@@ -1,6 +1,6 @@
 """Endpoints de salud / liveness."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -19,7 +19,7 @@ def health() -> dict:
     return {
         "status": "ok",
         "version": __version__,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
 
 

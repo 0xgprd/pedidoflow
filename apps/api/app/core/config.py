@@ -9,8 +9,8 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# El .env vive en la raíz del monorepo (3 niveles arriba de este fichero)
-_ENV_FILE = Path(__file__).resolve().parents[3] / ".env"
+# El .env vive en la raíz del monorepo (4 niveles arriba: app/core/config.py -> apps/api/app/core/)
+_ENV_FILE = Path(__file__).resolve().parents[4] / ".env"
 
 
 class Settings(BaseSettings):
@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     redis_url: str = Field(default="redis://localhost:6379/0")
     celery_broker_url: str = Field(default="redis://localhost:6379/1")
     celery_result_backend: str = Field(default="redis://localhost:6379/2")
+    celery_task_always_eager: bool = Field(default=False)
 
     # --- Auth (Clerk) ---
     clerk_publishable_key: str = Field(default="")
@@ -46,9 +47,13 @@ class Settings(BaseSettings):
 
     # --- IA ---
     anthropic_api_key: str = Field(default="")
-    anthropic_model: str = Field(default="claude-sonnet-4-5-20250929")
+    anthropic_model: str = Field(default="claude-sonnet-4-6")
     voyage_api_key: str = Field(default="")
     voyage_model: str = Field(default="voyage-3")
+
+    # --- OCR ---
+    mistral_api_key: str = Field(default="")
+    mistral_ocr_model: str = Field(default="mistral-ocr-latest")
 
     # --- Storage ---
     s3_endpoint_url: str = Field(default="")
@@ -57,13 +62,18 @@ class Settings(BaseSettings):
     s3_bucket: str = Field(default="pedidoflow-documents")
     s3_region: str = Field(default="auto")
 
-    # --- Microsoft Graph ---
-    ms_graph_tenant_id: str = Field(default="")
+    # --- Microsoft Graph (Outlook integration) ---
+    # Para apps multi-tenant usar "common" o "consumers"; para single-tenant tu Tenant ID
+    ms_graph_tenant_id: str = Field(default="common")
     ms_graph_client_id: str = Field(default="")
     ms_graph_client_secret: str = Field(default="")
     ms_graph_redirect_uri: str = Field(
         default="http://localhost:8000/api/v1/integrations/outlook/callback"
     )
+    # Scopes que pediremos: leer correos + offline_access para refresh tokens
+    ms_graph_scopes: str = Field(default="Mail.Read offline_access User.Read")
+    # URL del frontend para redirigir tras callback exitoso/fallido
+    ms_graph_post_callback_url: str = Field(default="http://localhost:5173/integrations")
 
     # --- Sage 200 ---
     sage200_base_url: str = Field(default="https://sage200.sage.es/api/sales")
