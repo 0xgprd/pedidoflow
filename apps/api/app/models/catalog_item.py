@@ -47,6 +47,10 @@ class CatalogItem(TimestampMixin, table=True):
     active: bool = Field(default=True, nullable=False)
     notes: str | None = Field(default=None)
 
+    # Orden de visualización en UI. Cuando se sube un CSV (tarifa) se rellena
+    # con el índice del item en el fichero (×10 para dejar hueco a inserts manuales).
+    sort_order: int = Field(default=0, nullable=False)
+
 
 class CatalogItemRead(SQLModel):
     id: UUID
@@ -59,6 +63,7 @@ class CatalogItemRead(SQLModel):
     currency: str
     active: bool
     notes: str | None
+    sort_order: int
     created_at: datetime
     updated_at: datetime
 

@@ -51,7 +51,13 @@ def list_items(
                 func.upper(CatalogItem.description).like(f"%{norm}%"),
             )
         )
-    query = query.order_by(CatalogItem.reference_normalized).offset(offset).limit(limit)  # type: ignore[attr-defined]
+    # Orden: sort_order ASC (preserva el orden de la tarifa al subir CSV) y
+    # como tiebreaker la referencia normalizada (alfabético dentro de un mismo grupo).
+    query = (
+        query.order_by(CatalogItem.sort_order, CatalogItem.reference_normalized)  # type: ignore[attr-defined]
+        .offset(offset)
+        .limit(limit)
+    )
     return list(session.exec(query).all())
 
 

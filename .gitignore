@@ -49,6 +49,11 @@ gcp-credentials.json
 
 # Runtime data (local dev)
 storage_local/
+
+# Client data (catalog CSVs, scratch SQL, debug scripts)
+Price List*.csv
+_*.py
+_*.sql
 *.db
 *.sqlite
 *.sqlite3
