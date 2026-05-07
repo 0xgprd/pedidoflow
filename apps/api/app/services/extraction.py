@@ -59,6 +59,8 @@ REGLAS CRÍTICAS:
 2. **Preserva las referencias EXACTAMENTE como aparecen.**
    - NO "corrijas" códigos hacia variantes parecidas. TF-75 ≠ TF-751. GF-1 ≠ GF-11. T-A ≠ T-AT.
    - Si la referencia es ambigua, devuelve null en `referencia` y el texto crudo en `descripcion`.
+   - **Si una línea muestra DOS códigos** (uno del cliente y uno del proveedor), prioriza el del **PROVEEDOR/VENDOR** — esa es la referencia que usamos para vender. Pistas que identifican la ref del proveedor: "Ref interne", "Internal ref", "Référence fournisseur", "Vendor ref", "Vendor PN", "Supplier ref", "Notre référence", "Our ref", "SKU". Ejemplo: `"GE000002 Ref Interne: DEB-01"` → `referencia="DEB-01"` (NO `GE000002`, que es el código interno del cliente).
+   - El código del CLIENTE (Customer PN, Buyer ref) puede ir en `descripcion` para no perderlo.
 
 3. **Cantidades y precios literales.**
    - Cantidades como números (sin separador de miles).
@@ -77,6 +79,22 @@ REGLAS CRÍTICAS:
    - Para valores derivados/calculados (totales agregados), source_text puede ser null.
    - El fragmento debe ser corto (<150 chars), preservando mayúsculas/símbolos.
 
+8. **CIF/NIF vs Nº IVA intracomunitario**:
+   - `cif_nif`: identificador fiscal nacional (ej: `B12345678` en España, `SIRET` francés).
+   - `numero_iva`: número de IVA intracomunitario (ej: `ESB12345678`, `FR40123456789`).
+   - Si solo aparece uno y no se puede distinguir, ponlo en `cif_nif`.
+
+9. **Direcciones — entrega vs facturación**:
+   - `direccion_entrega`: a dónde se envía la mercancía ("Ship to", "Livraison", "Entrega").
+   - `direccion_facturacion`: a dónde se envía la factura ("Bill to", "Facturation", "Facturación").
+   - Si solo hay UNA dirección sin distinción, ponla en `direccion_entrega` y deja `direccion_facturacion` en null.
+
+10. **Transporte / portes** (`totales.transporte`, número o null):
+    - Si el documento menciona portes/transport/freight con un IMPORTE explícito → ese importe.
+    - Si menciona transporte como "incluido"/"included"/"port payé" sin importe → 0.
+    - Si NO menciona transporte en absoluto → null.
+    - Pistas multilingües: "Frais de port", "FP", "Transport", "Portes", "Shipping", "Freight".
+
 ESTRUCTURA JSON A DEVOLVER:
 
 {
@@ -84,7 +102,9 @@ ESTRUCTURA JSON A DEVOLVER:
   "cliente": {
     "nombre": string | null,
     "cif_nif": string | null,
+    "numero_iva": string | null,
     "direccion_entrega": string | null,
+    "direccion_facturacion": string | null,
     "contacto_email": string | null
   },
   "pedido": {
@@ -107,6 +127,7 @@ ESTRUCTURA JSON A DEVOLVER:
   ],
   "totales": {
     "subtotal_ht": number | null,
+    "transporte": number | null,
     "iva": number | null,
     "total_ttc": number | null
   },
@@ -115,7 +136,9 @@ ESTRUCTURA JSON A DEVOLVER:
   "source_texts": {
     "cliente.nombre": string | null,
     "cliente.cif_nif": string | null,
+    "cliente.numero_iva": string | null,
     "cliente.direccion_entrega": string | null,
+    "cliente.direccion_facturacion": string | null,
     "cliente.contacto_email": string | null,
     "pedido.numero_pedido_cliente": string | null,
     "pedido.numero_oferta": string | null,
@@ -123,12 +146,17 @@ ESTRUCTURA JSON A DEVOLVER:
     "pedido.fecha_entrega_solicitada": string | null,
     "pedido.moneda": string | null,
     "pedido.observaciones": string | null,
+    "totales.transporte": string | null,
     "lineas.0.referencia": string | null,
     "lineas.0.descripcion": string | null,
     "lineas.1.referencia": string | null,
     "lineas.1.descripcion": string | null
   }
 }
+
+Si te paso CAMPOS CUSTOM DEL TENANT más abajo, añade también un bloque `"custom"`:
+  "custom": { "<key_custom>": string | null, ... }
+Solo incluye keys del listado custom. Deja el valor en null si no aparece en el documento.
 
 Devuelve SOLO el JSON, sin texto previo ni explicaciones, sin envolver en ```json.
 """
@@ -137,7 +165,9 @@ Devuelve SOLO el JSON, sin texto previo ni explicaciones, sin envolver en ```jso
 class ClienteData(BaseModel):
     nombre: str | None = None
     cif_nif: str | None = None
+    numero_iva: str | None = None
     direccion_entrega: str | None = None
+    direccion_facturacion: str | None = None
     contacto_email: str | None = None
 
 
@@ -161,6 +191,9 @@ class LineaPedido(BaseModel):
 
 class TotalesPedido(BaseModel):
     subtotal_ht: float | None = None
+    transporte: float | None = (
+        None  # null = no mencionado · 0 = mencionado sin coste · >0 = importe
+    )
     iva: float | None = None
     total_ttc: float | None = None
 
@@ -182,6 +215,10 @@ class ExtractionResult(BaseModel):
     confianza_global: str = "media"
     notas_extraccion: str | None = None
     source_texts: dict[str, str | None] = Field(default_factory=dict)
+    # Campos custom definidos por el tenant (tabla TenantField). Claude los rellena
+    # según el prompt extendido. Plano: {key_snake_case: valor_string}.
+    custom: dict[str, str | None] = Field(default_factory=dict)
+    # Campos custom añadidos manualmente por el revisor (zona del PDF etiquetada).
     custom_fields: list[CustomField] = Field(default_factory=list)
 
 
@@ -208,11 +245,16 @@ class ExtractionService:
         markdown: str,
         *,
         tenant_context: str | None = None,
+        field_aliases: dict[str, list[str]] | None = None,
+        custom_field_specs: list[tuple[str, str, str | None]] | None = None,
     ) -> ExtractionResult:
         """Extrae JSON estructurado del markdown.
 
-        `tenant_context` es texto libre que se inyecta en el prompt para guiar
-        la extracción (ej: "Tu empresa es Quimilock — nunca es el cliente").
+        - `tenant_context`: texto libre inyectado al prompt (ej: "Tu empresa es Quimilock").
+        - `field_aliases`: pistas {field_path: [labels conocidos en el PDF]} para que
+          Claude reconozca etiquetas multi-idioma del tenant.
+        - `custom_field_specs`: lista de campos custom del tenant a extraer al bloque
+          `custom`. Cada item es `(key_snake_case, label_humano, descripcion?)`.
         """
         from anthropic import Anthropic
 
@@ -221,7 +263,12 @@ class ExtractionService:
 
         client = Anthropic(api_key=self.api_key)
 
-        log.info("extraction.start", model=self.model, markdown_chars=len(markdown))
+        log.info(
+            "extraction.start",
+            model=self.model,
+            markdown_chars=len(markdown),
+            field_aliases=sum(len(v) for v in (field_aliases or {}).values()),
+        )
 
         system_blocks: list[dict[str, Any]] = [
             {
@@ -237,6 +284,30 @@ class ExtractionService:
                     "text": f"CONTEXTO DEL TENANT:\n{tenant_context}",
                 }
             )
+        if field_aliases:
+            lines = [
+                "PISTAS DEL TENANT (etiquetas reconocidas en este buzón):",
+                "Si encuentras alguna de estas etiquetas en el documento, el valor",
+                "que las acompaña corresponde al campo canónico indicado.",
+                "",
+            ]
+            for field, labels in sorted(field_aliases.items()):
+                if labels:
+                    joined = ", ".join(f'"{label}"' for label in sorted(set(labels)))
+                    lines.append(f"- {joined} → {field}")
+            system_blocks.append({"type": "text", "text": "\n".join(lines)})
+        if custom_field_specs:
+            lines = [
+                "CAMPOS CUSTOM DEL TENANT (intenta extraer cada uno como string en el bloque `custom`):",
+                "Devuelve null si el campo no aparece en el documento — NO inventes.",
+                "",
+            ]
+            for key, label, desc in custom_field_specs:
+                if desc:
+                    lines.append(f'- "{key}" — {label}: {desc}')
+                else:
+                    lines.append(f'- "{key}" — {label}')
+            system_blocks.append({"type": "text", "text": "\n".join(lines)})
 
         user_text = (
             "Markdown del PDF (OCR Mistral). Extrae el JSON siguiendo las reglas.\n\n"

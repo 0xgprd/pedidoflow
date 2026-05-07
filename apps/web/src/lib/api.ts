@@ -1,14 +1,46 @@
 /**
  * Cliente HTTP simple hacia la API Pedidoflow.
  * En dev usamos el proxy de Vite (/api → http://localhost:8000).
+ *
+ * Auth: cada request inyecta `Authorization: Bearer <jwt>` leído del session
+ * actual de Supabase. Si no hay session, intenta el fallback X-Tenant-Id legacy
+ * (para compat con tests / flujos antiguos).
  */
+
+import { supabase } from "@/lib/supabase";
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? "";
 
+// === Legacy: X-Tenant-Id (sólo dev/migración, mientras quede el banner) ===
 const TENANT_STORAGE_KEY = "pedidoflow.tenant_id";
 
+/**
+ * Devuelve un identificador "tenant activo" para los guards síncronos en páginas.
+ * Prioridad:
+ *  1. Si hay session de Supabase en localStorage → devuelve "supabase" (placeholder
+ *     truthy — el tenant real lo resuelve el backend desde el JWT).
+ *  2. Tenant legacy seleccionado manualmente.
+ *  3. null.
+ *
+ * Para el header HTTP usar `authHeaders()`.
+ */
 export function getTenantId(): string | null {
+  if (hasSupabaseSession()) return "supabase";
   return localStorage.getItem(TENANT_STORAGE_KEY);
+}
+
+function hasSupabaseSession(): boolean {
+  if (typeof window === "undefined") return false;
+  // El SDK de Supabase guarda el session bajo `sb-<projectRef>-auth-token`
+  // (o variantes). Detectamos cualquier clave que contenga `-auth-token`.
+  for (let i = 0; i < window.localStorage.length; i++) {
+    const key = window.localStorage.key(i);
+    if (key && key.includes("-auth-token")) {
+      const raw = window.localStorage.getItem(key);
+      if (raw && raw.length > 50) return true;
+    }
+  }
+  return false;
 }
 
 export function setTenantId(id: string): void {
@@ -19,18 +51,25 @@ export function clearTenantId(): void {
   localStorage.removeItem(TENANT_STORAGE_KEY);
 }
 
-function authHeaders(): Record<string, string> {
+async function authHeaders(): Promise<Record<string, string>> {
+  // Prioridad 1: JWT de Supabase
+  const { data } = await supabase.auth.getSession();
+  if (data.session?.access_token) {
+    return { Authorization: `Bearer ${data.session.access_token}` };
+  }
+  // Prioridad 2 (legacy): X-Tenant-Id
   const tenantId = getTenantId();
   return tenantId ? { "X-Tenant-Id": tenantId } : {};
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const isFormData = init?.body instanceof FormData;
+  const auth = await authHeaders();
   const res = await fetch(`${BASE_URL}${path}`, {
     ...init,
     headers: {
       ...(isFormData ? {} : { "Content-Type": "application/json" }),
-      ...authHeaders(),
+      ...auth,
       ...(init?.headers ?? {}),
     },
   });
@@ -65,7 +104,9 @@ export type MatchStrategy =
 export interface ExtractedCliente {
   nombre: string | null;
   cif_nif: string | null;
+  numero_iva: string | null;
   direccion_entrega: string | null;
+  direccion_facturacion: string | null;
   contacto_email: string | null;
 }
 
@@ -89,6 +130,8 @@ export interface ExtractedLinea {
 
 export interface ExtractedTotales {
   subtotal_ht: number | null;
+  /** null = no mencionado · 0 = mencionado sin coste · >0 = importe en € */
+  transporte: number | null;
   iva: number | null;
   total_ttc: number | null;
 }
@@ -111,6 +154,9 @@ export interface ExtractionData {
   source_texts?: Record<string, string | null>;
   validation?: ValidationResult;
   workflow?: WorkflowEvaluation;
+  /** Campos custom dinámicos extraídos por Claude según TenantField. Plano: {key: valor}. */
+  custom?: Record<string, string | null>;
+  /** Campos custom añadidos manualmente por el revisor desde el PDF. */
   custom_fields?: CustomField[];
 }
 
@@ -142,6 +188,8 @@ export interface DocumentListItem {
   extraction_error: string | null;
   has_blocking_issues: boolean;
   has_discrepancies: boolean;
+  /** null para no-pedidos. true = tiene oferta vinculada. false = pedido sin oferta. */
+  has_offer_link: boolean | null;
   created_at: string;
   updated_at: string;
   processed_at: string | null;
@@ -214,7 +262,7 @@ export const api = {
   getDocument: (id: string) => request<DocumentRead>(`/api/v1/documents/${id}`),
   getDocumentPdfBytes: async (id: string): Promise<Uint8Array> => {
     const res = await fetch(`${BASE_URL}/api/v1/documents/${id}/pdf`, {
-      headers: authHeaders(),
+      headers: await authHeaders(),
     });
     if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
     const buf = await res.arrayBuffer();
@@ -248,6 +296,18 @@ export const api = {
       method: "POST",
       body: "{}",
     }),
+  revalidate: (onlyExtracted = false) =>
+    request<{
+      inspected: number;
+      updated: number;
+      blocking_now: number;
+      blocking_before: number;
+      new_blocks: number;
+      cleared_blocks: number;
+    }>(`/api/v1/documents/revalidate?only_extracted=${onlyExtracted}`, {
+      method: "POST",
+      body: "{}",
+    }),
   patchDocumentType: (id: string, document_type: DocumentType) =>
     request<DocumentRead>(`/api/v1/documents/${id}/type`, {
       method: "PATCH",
@@ -265,7 +325,7 @@ export const api = {
   unlinkOffer: async (orderId: string): Promise<void> => {
     const res = await fetch(`${BASE_URL}/api/v1/documents/${orderId}/link`, {
       method: "DELETE",
-      headers: authHeaders(),
+      headers: await authHeaders(),
     });
     if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
   },
@@ -275,55 +335,129 @@ export const api = {
       body: "{}",
     }),
 
-  // ---- Field mappings (memoria del tenant) ----
-  listFieldMappings: () => request<FieldMappingRead[]>("/api/v1/field-mappings"),
-  upsertFieldMapping: (payload: FieldMappingCreate) =>
-    request<FieldMappingRead>("/api/v1/field-mappings", {
+  // ---- Concepts (diccionario aliases→campo per-tenant + globales) ----
+  listConcepts: () => request<ConceptRead[]>("/api/v1/concepts"),
+  listSchemaFields: () => request<SchemaField[]>("/api/v1/concepts/schema-fields"),
+  createConcept: (payload: ConceptCreate) =>
+    request<ConceptRead>("/api/v1/concepts", {
       method: "POST",
       body: JSON.stringify(payload),
     }),
-  patchFieldMapping: (id: string, payload: FieldMappingUpdate) =>
-    request<FieldMappingRead>(`/api/v1/field-mappings/${id}`, {
+  updateConcept: (id: string, payload: ConceptUpdate) =>
+    request<ConceptRead>(`/api/v1/concepts/${id}`, {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
-  deleteFieldMapping: async (id: string): Promise<void> => {
-    const res = await fetch(`${BASE_URL}/api/v1/field-mappings/${id}`, {
+  deleteConcept: async (id: string): Promise<void> => {
+    const res = await fetch(`${BASE_URL}/api/v1/concepts/${id}`, {
       method: "DELETE",
-      headers: authHeaders(),
+      headers: await authHeaders(),
     });
     if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
   },
+  addConceptAlias: (id: string, text: string) =>
+    request<ConceptRead>(`/api/v1/concepts/${id}/aliases`, {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    }),
+
+  // ---- Linked orders (oferta → pedidos vinculados) ----
+  listLinkedOrders: (offerId: string) =>
+    request<DocumentLinkRead[]>(`/api/v1/documents/${offerId}/linked-orders`),
 };
 
 // =============================================================================
-// Field mapping types
+// Concept types
 // =============================================================================
 
-export interface FieldMappingRead {
+export interface ConceptRead {
   id: string;
-  tenant_id: string;
-  source_text: string;
-  canonical_value: string;
-  canonical_code: string | null;
-  field_path_pattern: string | null;
+  tenant_id: string | null;  // null = global
+  name: string;
+  code: string | null;
+  field_path: string | null;  // null = concepto libre (sustitución de valores)
+  aliases: string[];
   hits: number;
   created_at: string;
   updated_at: string;
 }
 
-export interface FieldMappingCreate {
-  source_text: string;
-  canonical_value: string;
-  canonical_code?: string | null;
-  field_path_pattern?: string | null;
+export interface ConceptCreate {
+  name: string;
+  code?: string | null;
+  field_path?: string | null;
+  aliases?: string[];
+  is_global?: boolean;
 }
 
-export interface FieldMappingUpdate {
-  canonical_value?: string;
-  canonical_code?: string | null;
-  field_path_pattern?: string | null;
+export interface ConceptUpdate {
+  name?: string;
+  code?: string | null;
+  field_path?: string | null;
+  aliases?: string[];
+  is_global?: boolean;
 }
+
+export interface SchemaField {
+  path: string;     // ej: "cliente.nombre" o "custom.horario_entrega"
+  label: string;    // ej: "Nombre"
+  group: string;    // ej: "Cliente"
+  is_custom?: boolean;
+  /** Sólo si is_custom=true: id del TenantField subyacente (para borrar). */
+  tenant_field_id?: string;
+}
+
+// =============================================================================
+// Tenant fields (campos custom dinámicos por tenant)
+// =============================================================================
+
+export interface TenantFieldRead {
+  id: string;
+  tenant_id: string;
+  group: string;          // "Cliente" | "Pedido" | "Totales"
+  key: string;            // snake_case
+  label: string;
+  description: string | null;
+  order: number;
+  field_path: string;     // "custom.<key>"
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TenantFieldCreate {
+  group: string;
+  label: string;
+  key?: string | null;
+  description?: string | null;
+  order?: number;
+}
+
+export interface TenantFieldUpdate {
+  label?: string;
+  description?: string | null;
+  order?: number;
+}
+
+export const tenantFieldsApi = {
+  list: () => request<TenantFieldRead[]>("/api/v1/tenant-fields"),
+  create: (payload: TenantFieldCreate) =>
+    request<TenantFieldRead>("/api/v1/tenant-fields", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  update: (id: string, payload: TenantFieldUpdate) =>
+    request<TenantFieldRead>(`/api/v1/tenant-fields/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  remove: async (id: string): Promise<void> => {
+    const res = await fetch(`${BASE_URL}/api/v1/tenant-fields/${id}`, {
+      method: "DELETE",
+      headers: await authHeaders(),
+    });
+    if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
+  },
+};
 
 // =============================================================================
 // Email integrations (Outlook)
@@ -421,7 +555,7 @@ export const catalogApi = {
   remove: async (id: string): Promise<void> => {
     const res = await fetch(`${BASE_URL}/api/v1/catalog-items/${id}`, {
       method: "DELETE",
-      headers: authHeaders(),
+      headers: await authHeaders(),
     });
     if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
   },
@@ -431,7 +565,7 @@ export const catalogApi = {
     const res = await fetch(`${BASE_URL}/api/v1/catalog-items/upload`, {
       method: "POST",
       body: formData,
-      headers: authHeaders(),
+      headers: await authHeaders(),
     });
     if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
     return (await res.json()) as CatalogUploadResult;
@@ -588,7 +722,7 @@ export const rulesApi = {
   remove: async (id: string): Promise<void> => {
     const res = await fetch(`${BASE_URL}/api/v1/workflow-rules/${id}`, {
       method: "DELETE",
-      headers: authHeaders(),
+      headers: await authHeaders(),
     });
     if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
   },
@@ -613,7 +747,7 @@ export const integrationsApi = {
   disconnect: async (id: string): Promise<void> => {
     const res = await fetch(`${BASE_URL}/api/v1/integrations/${id}`, {
       method: "DELETE",
-      headers: authHeaders(),
+      headers: await authHeaders(),
     });
     if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
   },

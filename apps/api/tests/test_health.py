@@ -7,7 +7,7 @@ def test_root(client: TestClient) -> None:
     r = client.get("/")
     assert r.status_code == 200
     body = r.json()
-    assert body["name"] == "Pedidoflow API"
+    assert body["name"] == "Order Flow API"
     assert "version" in body
 
 

@@ -22,7 +22,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { PDFViewer, bgClassForPath, type Highlight } from "@/components/PDFViewer";
-import { AssignConceptModal } from "@/components/AssignConceptModal";
+import { AssignToConceptModal } from "@/components/AssignToConceptModal";
 import { AddCustomFieldModal } from "@/components/AddCustomFieldModal";
 import { api } from "@/lib/api";
 import type {
@@ -35,6 +35,7 @@ import type {
   ExtractedLinea,
   ExtractionData,
   MatchStrategy,
+  SchemaField,
   ValidationLevel,
   ValidationResult,
   WorkflowEvaluation,
@@ -71,19 +72,41 @@ export function DocumentDetail() {
   const [draft, setDraft] = useState<ExtractionData | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // Modal "asignar concepto" (per-tenant FieldMapping)
-  const [conceptModal, setConceptModal] = useState<{
-    sourceText: string;
-    initialCanonical?: string;
-    hintFieldPath?: string;
-  } | null>(null);
+  // Modal "asignar a concepto" (per-tenant o global Concept)
+  const [conceptModal, setConceptModal] = useState<{ sourceText: string } | null>(null);
 
   // Modal "campo custom" (añade entrada a extracted_json.custom_fields)
   const [customFieldModal, setCustomFieldModal] = useState<{ text: string } | null>(null);
 
+  // Si este doc es OFERTA, cargar pedidos que la tienen vinculada
+  const [linkedOrders, setLinkedOrders] = useState<DocumentLinkRead[]>([]);
+
   // DocumentLink (oferta vinculada — solo si el doc es pedido)
   const [link, setLink] = useState<DocumentLinkRead | null>(null);
   const [linkBusy, setLinkBusy] = useState(false);
+
+  // Schema fields (fijos + custom del tenant). Se usa para renderizar campos
+  // custom dentro de cada grupo del panel derecho.
+  const [schemaFields, setSchemaFields] = useState<SchemaField[]>([]);
+
+  useEffect(() => {
+    api
+      .listSchemaFields()
+      .then(setSchemaFields)
+      .catch(() => setSchemaFields([]));
+  }, []);
+
+  // Custom fields agrupados por grupo (Cliente / Pedido / Totales)
+  const customFieldsByGroup = useMemo(() => {
+    const m = new Map<string, SchemaField[]>();
+    for (const f of schemaFields) {
+      if (!f.is_custom) continue;
+      const arr = m.get(f.group) ?? [];
+      arr.push(f);
+      m.set(f.group, arr);
+    }
+    return m;
+  }, [schemaFields]);
 
   const refresh = useCallback(async () => {
     if (!id) return;
@@ -140,6 +163,26 @@ export function DocumentDetail() {
       })
       .catch(() => {
         if (!cancelled) setLink(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id, doc]);
+
+  // Si es oferta, cargar lista de pedidos que apuntan a ella
+  useEffect(() => {
+    if (!id || !doc || doc.document_type !== "oferta") {
+      setLinkedOrders([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .listLinkedOrders(id)
+      .then((arr) => {
+        if (!cancelled) setLinkedOrders(arr);
+      })
+      .catch(() => {
+        if (!cancelled) setLinkedOrders([]);
       });
     return () => {
       cancelled = true;
@@ -408,6 +451,9 @@ export function DocumentDetail() {
               onUnlink={handleUnlink}
             />
           )}
+          {doc.document_type === "oferta" && linkedOrders.length > 0 && (
+            <LinkedOrdersPanel orders={linkedOrders} />
+          )}
           {draft ? (
             <ExtractionView
               data={draft}
@@ -415,10 +461,9 @@ export function DocumentDetail() {
               activeFieldPath={activeFieldPath}
               onFieldFocus={setActiveFieldPath}
               editable={canEdit}
-              onAssignConcept={(sourceText, hintFieldPath) =>
-                setConceptModal({ sourceText, hintFieldPath })
-              }
+              onAssignConcept={(sourceText) => setConceptModal({ sourceText })}
               originalData={doc.extracted_json ?? null}
+              customFieldsByGroup={customFieldsByGroup}
             />
           ) : (
             <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground">
@@ -442,16 +487,10 @@ export function DocumentDetail() {
         </div>
       </details>
 
-      <AssignConceptModal
+      <AssignToConceptModal
         open={conceptModal !== null}
         sourceText={conceptModal?.sourceText ?? ""}
-        initialCanonical={conceptModal?.initialCanonical}
-        hintFieldPath={conceptModal?.hintFieldPath}
         onClose={() => setConceptModal(null)}
-        onSaved={() => {
-          // El próximo upload aplicará el mapping. Aquí no actualizamos el draft
-          // actual — el usuario puede aplicar manualmente si quiere.
-        }}
       />
 
       <AddCustomFieldModal
@@ -459,13 +498,11 @@ export function DocumentDetail() {
         initialValue={customFieldModal?.text ?? ""}
         onClose={() => setCustomFieldModal(null)}
         onConfirm={(field) => {
-          // Añadir al draft local (se persiste con "Guardar cambios")
           if (!draft) return;
-          const next = {
+          setDraft({
             ...draft,
             custom_fields: [...(draft.custom_fields ?? []), field],
-          };
-          setDraft(next);
+          });
         }}
       />
     </div>
@@ -486,6 +523,8 @@ interface ExtractionViewProps {
   /** Versión original de extracted_json (sin draft) — usada para sugerir
    *  el `source_text` cuando se quiere mapear desde el form. */
   originalData?: ExtractionData | null;
+  /** Campos custom (TenantField) agrupados por grupo — render dinámico. */
+  customFieldsByGroup?: Map<string, SchemaField[]>;
 }
 
 function ExtractionView({
@@ -496,6 +535,7 @@ function ExtractionView({
   editable,
   onAssignConcept,
   originalData,
+  customFieldsByGroup,
 }: ExtractionViewProps) {
   const moneda = data.pedido.moneda ?? "EUR";
 
@@ -504,6 +544,10 @@ function ExtractionView({
   }
   function patchPedido<K extends keyof typeof data.pedido>(key: K, value: string | null) {
     onChange({ ...data, pedido: { ...data.pedido, [key]: value || null } });
+  }
+  function patchCustom(key: string, value: string | null) {
+    const next = { ...(data.custom ?? {}), [key]: value || null };
+    onChange({ ...data, custom: next });
   }
   function patchLinea(idx: number, patch: Partial<ExtractedLinea>) {
     const lineas = data.lineas.map((l, i) => (i === idx ? { ...l, ...patch } : l));
@@ -530,7 +574,7 @@ function ExtractionView({
   }
 
   // Resolver el valor original (literal del PDF) del campo activo, para poder
-  // sugerirlo como source_text cuando el usuario quiere crear un FieldMapping.
+  // sugerirlo como source_text cuando el usuario quiere asignar un Concept.
   const activeOriginalValue = useMemo(() => {
     if (!activeFieldPath || !originalData) return null;
     return getByPath(originalData, activeFieldPath);
@@ -578,8 +622,23 @@ function ExtractionView({
         <FieldGrid>
           <EditField path="cliente.nombre" label="Nombre" value={data.cliente.nombre} onChange={(v) => patchCliente("nombre", v)} active={activeFieldPath} onFocus={onFieldFocus} editable={editable} wide />
           <EditField path="cliente.cif_nif" label="CIF / NIF" value={data.cliente.cif_nif} onChange={(v) => patchCliente("cif_nif", v)} active={activeFieldPath} onFocus={onFieldFocus} editable={editable} />
-          <EditField path="cliente.contacto_email" label="Email" value={data.cliente.contacto_email} onChange={(v) => patchCliente("contacto_email", v)} active={activeFieldPath} onFocus={onFieldFocus} editable={editable} />
+          <EditField path="cliente.numero_iva" label="Nº IVA intracomunitario" value={data.cliente.numero_iva} onChange={(v) => patchCliente("numero_iva", v)} active={activeFieldPath} onFocus={onFieldFocus} editable={editable} />
+          <EditField path="cliente.contacto_email" label="Email" value={data.cliente.contacto_email} onChange={(v) => patchCliente("contacto_email", v)} active={activeFieldPath} onFocus={onFieldFocus} editable={editable} wide />
           <EditField path="cliente.direccion_entrega" label="Dirección de entrega" value={data.cliente.direccion_entrega} onChange={(v) => patchCliente("direccion_entrega", v)} active={activeFieldPath} onFocus={onFieldFocus} editable={editable} wide />
+          <EditField path="cliente.direccion_facturacion" label="Dirección de facturación" value={data.cliente.direccion_facturacion} onChange={(v) => patchCliente("direccion_facturacion", v)} active={activeFieldPath} onFocus={onFieldFocus} editable={editable} wide />
+          {(customFieldsByGroup?.get("Cliente") ?? []).map((cf) => (
+            <EditField
+              key={cf.path}
+              path={cf.path}
+              label={cf.label}
+              value={data.custom?.[cf.path.replace("custom.", "")] ?? null}
+              onChange={(v) => patchCustom(cf.path.replace("custom.", ""), v)}
+              active={activeFieldPath}
+              onFocus={onFieldFocus}
+              editable={editable}
+              wide
+            />
+          ))}
         </FieldGrid>
       </Section>
 
@@ -591,6 +650,19 @@ function ExtractionView({
           <EditField path="pedido.fecha_entrega_solicitada" label="Fecha entrega" value={data.pedido.fecha_entrega_solicitada} onChange={(v) => patchPedido("fecha_entrega_solicitada", v)} active={activeFieldPath} onFocus={onFieldFocus} editable={editable} />
           <EditField path="pedido.moneda" label="Moneda" value={data.pedido.moneda} onChange={(v) => patchPedido("moneda", v)} active={activeFieldPath} onFocus={onFieldFocus} editable={editable} />
           <EditField path="pedido.observaciones" label="Observaciones" value={data.pedido.observaciones} onChange={(v) => patchPedido("observaciones", v)} active={activeFieldPath} onFocus={onFieldFocus} editable={editable} wide multiline />
+          {(customFieldsByGroup?.get("Pedido") ?? []).map((cf) => (
+            <EditField
+              key={cf.path}
+              path={cf.path}
+              label={cf.label}
+              value={data.custom?.[cf.path.replace("custom.", "")] ?? null}
+              onChange={(v) => patchCustom(cf.path.replace("custom.", ""), v)}
+              active={activeFieldPath}
+              onFocus={onFieldFocus}
+              editable={editable}
+              wide
+            />
+          ))}
         </FieldGrid>
       </Section>
 
@@ -638,9 +710,33 @@ function ExtractionView({
       <Section title="Totales" sectionTone="violet">
         <div className="space-y-1 text-sm max-w-xs ml-auto">
           <TotalRow label="Subtotal HT" value={data.totales.subtotal_ht} moneda={moneda} />
+          <TotalRow
+            label="Transporte"
+            value={data.totales.transporte}
+            moneda={moneda}
+            mutedIfNull="(no mencionado)"
+          />
           <TotalRow label="IVA" value={data.totales.iva} moneda={moneda} />
           <TotalRow label="Total TTC" value={data.totales.total_ttc} moneda={moneda} bold />
         </div>
+        {(customFieldsByGroup?.get("Totales") ?? []).length > 0 && (
+          <div className="mt-3 pt-3 border-t">
+            <FieldGrid>
+              {(customFieldsByGroup?.get("Totales") ?? []).map((cf) => (
+                <EditField
+                  key={cf.path}
+                  path={cf.path}
+                  label={cf.label}
+                  value={data.custom?.[cf.path.replace("custom.", "")] ?? null}
+                  onChange={(v) => patchCustom(cf.path.replace("custom.", ""), v)}
+                  active={activeFieldPath}
+                  onFocus={onFieldFocus}
+                  editable={editable}
+                />
+              ))}
+            </FieldGrid>
+          </div>
+        )}
       </Section>
 
       {(data.custom_fields?.length ?? 0) > 0 && (
@@ -1071,11 +1167,14 @@ function TotalRow({
   value,
   moneda,
   bold,
+  mutedIfNull,
 }: {
   label: string;
   value: number | null;
   moneda: string;
   bold?: boolean;
+  /** Texto a mostrar si value === null (en lugar del em-dash). */
+  mutedIfNull?: string;
 }) {
   return (
     <div
@@ -1085,7 +1184,13 @@ function TotalRow({
       )}
     >
       <span className={cn(!bold && "text-muted-foreground")}>{label}</span>
-      <span className="tabular-nums">{formatMoney(value, moneda)}</span>
+      <span className="tabular-nums">
+        {value === null && mutedIfNull ? (
+          <span className="text-muted-foreground italic text-xs">{mutedIfNull}</span>
+        ) : (
+          formatMoney(value, moneda)
+        )}
+      </span>
     </div>
   );
 }
@@ -1105,6 +1210,37 @@ function ConfianzaBadge({ confianza }: { confianza: Confianza }) {
     >
       {labels[confianza]}
     </span>
+  );
+}
+
+// =============================================================================
+// Panel "Pedidos vinculados" — solo si el doc es OFERTA
+// =============================================================================
+
+function LinkedOrdersPanel({ orders }: { orders: DocumentLinkRead[] }) {
+  return (
+    <div className="rounded-lg border border-sky-300 bg-sky-50 p-4">
+      <div className="text-sm font-medium text-sky-900 flex items-center gap-1.5 mb-2">
+        <Link2 className="h-4 w-4" />
+        Pedidos vinculados a esta oferta ({orders.length})
+      </div>
+      <ul className="space-y-1.5">
+        {orders.map((o) => (
+          <li key={o.id} className="text-sm flex items-center gap-2">
+            <Link
+              to={`/inbox/${o.order_document_id}`}
+              className="text-blue-600 hover:underline font-medium"
+            >
+              ← Volver al pedido
+            </Link>
+            <span className="text-xs text-muted-foreground">
+              {STRATEGY_LABEL[o.match_strategy]}
+              {o.match_score < 1 && ` · ${Math.round(o.match_score * 100)}% similaridad`}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

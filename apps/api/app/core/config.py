@@ -40,10 +40,17 @@ class Settings(BaseSettings):
     celery_result_backend: str = Field(default="redis://localhost:6379/2")
     celery_task_always_eager: bool = Field(default=False)
 
-    # --- Auth (Clerk) ---
-    clerk_publishable_key: str = Field(default="")
-    clerk_secret_key: str = Field(default="")
-    clerk_jwt_issuer: str = Field(default="")
+    # --- Auth (Supabase) ---
+    # URL del proyecto Supabase (usada para revocar tokens y leer user info).
+    supabase_url: str = Field(default="")
+    # Publishable key (frontend) — segura para incluir en el JS.
+    supabase_anon_key: str = Field(default="")
+    # JWT secret del proyecto (Settings → API → JWT Settings). Usado para
+    # validar firma HS256 de los tokens emitidos por Supabase Auth.
+    supabase_jwt_secret: str = Field(default="")
+    # Si es vacío, el header X-Tenant-Id sigue funcionando (modo dev / migración).
+    # En producción debe estar a False para forzar siempre auth via JWT.
+    auth_allow_tenant_header_fallback: bool = Field(default=True)
 
     # --- IA ---
     anthropic_api_key: str = Field(default="")

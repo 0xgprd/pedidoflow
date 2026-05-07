@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Pedidoflow API",
+    title="Order Flow API",
     description="SaaS de automatización de pedidos para Sage 200 y otros ERPs.",
     version=__version__,
     lifespan=lifespan,
@@ -63,7 +63,7 @@ app.include_router(api_router, prefix="/api/v1")
 @app.get("/", include_in_schema=False)
 def root() -> dict:
     return {
-        "name": "Pedidoflow API",
+        "name": "Order Flow API",
         "version": __version__,
         "env": settings.app_env,
         "docs": "/docs",

@@ -21,15 +21,16 @@ from sqlmodel import Session, select
 from app.core.db import engine
 from app.core.logging import get_logger
 from app.models.catalog_item import CatalogItem
+from app.models.concept import Concept
 from app.models.document import Document, DocumentSource, DocumentStatus, DocumentType
 from app.models.document_link import DocumentLink
 from app.models.email_integration import EmailIntegration, IntegrationStatus
-from app.models.field_mapping import FieldMapping
+from app.models.tenant_field import TenantField
 from app.models.workflow_rule import WorkflowRule
 from app.services import msgraph
 from app.services.classification import classify_document
+from app.services.concepts import apply_concepts, increment_hits
 from app.services.extraction import ExtractionError, ExtractionService
-from app.services.field_mapping import apply_mappings, increment_hits
 from app.services.matching import compare_order_vs_offer, find_matching_offer
 from app.services.ocr import OCRError, get_ocr_provider
 from app.services.rules_engine import evaluate_rules
@@ -84,10 +85,39 @@ def extract_document(self, document_id: str) -> dict:
         ocr_result = ocr_provider.extract(pdf_bytes)
         markdown = ocr_result.full_markdown
 
-        # 3. Extracción IA con el markdown del OCR
-        # TODO Fase 3 paso 4: pasar tenant_context cuando esté en DB
+        # Cargar concepts del tenant + globales para extraer field_aliases
+        # y los TenantField (campos custom dinámicos) para extender el prompt.
+        from sqlalchemy import or_
+
+        with Session(engine) as session_pre:
+            doc_pre = session_pre.get(Document, doc_uuid)
+            tenant_id_for_pre = doc_pre.tenant_id if doc_pre else None
+            field_aliases: dict[str, list[str]] = {}
+            custom_field_specs: list[tuple[str, str, str | None]] = []
+            if tenant_id_for_pre is not None:
+                concepts_pre = session_pre.exec(
+                    select(Concept).where(
+                        or_(Concept.tenant_id == tenant_id_for_pre, Concept.tenant_id.is_(None))
+                    )
+                ).all()
+                for c in concepts_pre:
+                    if c.field_path and c.aliases:
+                        field_aliases.setdefault(c.field_path, []).extend(c.aliases)
+                tenant_fields_pre = session_pre.exec(
+                    select(TenantField).where(TenantField.tenant_id == tenant_id_for_pre)
+                ).all()
+                custom_field_specs = [
+                    (tf.key, tf.label, tf.description) for tf in tenant_fields_pre
+                ]
+
+        # 3. Extracción IA con el markdown del OCR + pistas de campos del tenant
         service = ExtractionService()
-        result = service.extract(markdown, tenant_context=None)
+        result = service.extract(
+            markdown,
+            tenant_context=None,
+            field_aliases=field_aliases,
+            custom_field_specs=custom_field_specs,
+        )
 
     except (OCRError, ExtractionError) as e:
         with Session(engine) as session:
@@ -114,30 +144,32 @@ def extract_document(self, document_id: str) -> dict:
         log.exception("task.extract_document.unexpected", document_id=document_id)
         raise
 
-    # 4. Aplicar FieldMappings + validar catálogo + reglas workflow
+    # 4. Aplicar Concepts (per-tenant + globales) + validar catálogo + reglas workflow
+    from sqlalchemy import or_
+
     with Session(engine) as session:
         doc = session.get(Document, doc_uuid)
         if doc is None:
             return {"status": "lost", "document_id": document_id}
         tenant_id = doc.tenant_id
-        mappings = list(
+        concepts = list(
             session.exec(
-                select(FieldMapping).where(FieldMapping.tenant_id == tenant_id)
+                select(Concept).where(
+                    or_(Concept.tenant_id == tenant_id, Concept.tenant_id.is_(None))
+                )
             ).all()
         )
         catalog = list(
-            session.exec(
-                select(CatalogItem).where(CatalogItem.tenant_id == tenant_id)
-            ).all()
+            session.exec(select(CatalogItem).where(CatalogItem.tenant_id == tenant_id)).all()
         )
         rules = list(
-            session.exec(
-                select(WorkflowRule).where(WorkflowRule.tenant_id == tenant_id)
-            ).all()
+            session.exec(select(WorkflowRule).where(WorkflowRule.tenant_id == tenant_id)).all()
         )
 
+    # Aplica solo concepts SIN field_path (los con field_path se inyectaron al prompt)
     raw_extracted = result.model_dump(mode="json")
-    mapped_extracted, hit_ids = apply_mappings(raw_extracted, mappings)
+    free_concepts = [c for c in concepts if not c.field_path]
+    mapped_extracted, hit_ids = apply_concepts(raw_extracted, free_concepts)
     mapped_extracted["validation"] = validate_against_catalog(mapped_extracted, catalog)
 
     # 5. Clasificar tipo (filename heurística + JSON Claude)
@@ -247,7 +279,12 @@ def _try_link_order_to_offer(
         summary = comparison.get("summary", {})
         if any(
             summary.get(k, 0) > 0
-            for k in ("price_discrepancies", "qty_discrepancies", "added_in_order", "removed_from_offer")
+            for k in (
+                "price_discrepancies",
+                "qty_discrepancies",
+                "added_in_order",
+                "removed_from_offer",
+            )
         ):
             order = session.get(Document, order_doc_id)
             if order is not None:
@@ -277,11 +314,7 @@ def _try_link_order_to_offer(
 
 def _ensure_fresh_token(session: Session, integ: EmailIntegration) -> str:
     """Refresca access_token si está caducado. Devuelve un token válido."""
-    if (
-        integ.access_token
-        and integ.token_expires_at
-        and integ.token_expires_at > datetime.now(UTC)
-    ):
+    if integ.access_token and integ.token_expires_at and integ.token_expires_at > datetime.now(UTC):
         return integ.access_token
 
     if not integ.refresh_token:
@@ -472,9 +505,7 @@ def poll_all_outlook_integrations() -> dict:
     with Session(engine) as session:
         active = list(
             session.exec(
-                select(EmailIntegration).where(
-                    EmailIntegration.status == IntegrationStatus.ACTIVE
-                )
+                select(EmailIntegration).where(EmailIntegration.status == IntegrationStatus.ACTIVE)
             ).all()
         )
     for integ in active:
