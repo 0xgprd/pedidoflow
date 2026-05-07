@@ -9,15 +9,26 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# El .env vive en la raíz del monorepo (4 niveles arriba: app/core/config.py -> apps/api/app/core/)
-_ENV_FILE = Path(__file__).resolve().parents[4] / ".env"
+# El .env vive en la raíz del monorepo en local (4 niveles arriba). En Docker
+# (Railway) no existe — las env vars vienen del entorno del proceso directamente.
+# Si el path no existe o no se puede calcular, pydantic-settings solo lee del env.
+def _find_env_file() -> str | None:
+    parents = Path(__file__).resolve().parents
+    if len(parents) > 4:
+        candidate = parents[4] / ".env"
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+_ENV_FILE = _find_env_file()
 
 
 class Settings(BaseSettings):
     """Settings de la aplicación. Tipado fuerte, fail-fast en startup."""
 
     model_config = SettingsConfigDict(
-        env_file=str(_ENV_FILE),
+        env_file=_ENV_FILE,  # None en producción → solo env vars del proceso
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
