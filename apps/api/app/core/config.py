@@ -95,18 +95,26 @@ class Settings(BaseSettings):
     sentry_dsn: str = Field(default="")
     logfire_token: str = Field(default="")
 
+    # --- CORS ---
+    # CSV de orígenes permitidos en producción (ej. "https://orderflow.vercel.app,https://app.orderflow.com")
+    cors_allow_origins: str = Field(default="")
+
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"
 
     @property
     def cors_origins(self) -> list[str]:
+        # Origins desde env var (csv) — siempre se aplican
+        extra = [o.strip() for o in self.cors_allow_origins.split(",") if o.strip()]
         if self.is_production:
-            return []  # configurar dominios reales en prod
+            return extra
+        # En dev/test añadimos los locales por defecto
         return [
             "http://localhost:5173",  # Vite dev
             "http://localhost:3000",
             "http://127.0.0.1:5173",
+            *extra,
         ]
 
 

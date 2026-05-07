@@ -13,12 +13,14 @@ import { Rules } from "@/pages/Rules";
 import { SignIn } from "@/pages/SignIn";
 import { SignUp } from "@/pages/SignUp";
 import { Onboarding } from "@/pages/Onboarding";
+import { Landing } from "@/pages/Landing";
 
 export default function App() {
   return (
     <AuthProvider>
       <Routes>
         {/* Públicas */}
+        <Route path="/" element={<Landing />} />
         <Route path="/sign-in" element={<SignIn />} />
         <Route path="/sign-up" element={<SignUp />} />
         <Route path="/onboarding" element={<Onboarding />} />
@@ -26,7 +28,7 @@ export default function App() {
         {/* Protegidas: requieren auth + tenant */}
         <Route element={<RequireAuth />}>
           <Route element={<Layout />}>
-            <Route path="/" element={<Home />} />
+            <Route path="/dashboard" element={<Home />} />
             <Route path="/inbox" element={<Inbox />} />
             <Route path="/inbox/:id" element={<DocumentDetail />} />
             <Route path="/catalog" element={<Catalog />} />

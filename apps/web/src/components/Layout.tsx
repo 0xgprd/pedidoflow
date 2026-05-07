@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/AuthContext";
 
 const navItems = [
-  { to: "/", label: "Inicio", icon: HomeIcon },
+  { to: "/dashboard", label: "Inicio", icon: HomeIcon },
   { to: "/inbox", label: "Bandeja", icon: Inbox },
   { to: "/memory", label: "Memoria", icon: Brain },
   { to: "/rules", label: "Reglas", icon: Workflow },
@@ -33,14 +33,14 @@ export function Layout() {
   return (
     <div className="min-h-screen flex">
       <aside className="w-60 border-r bg-card p-4 flex flex-col gap-1">
-        <Link to="/" className="text-xl font-semibold mb-6 px-2">
+        <Link to="/dashboard" className="text-xl font-semibold mb-6 px-2">
           Order Flow
         </Link>
         {navItems.map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
             to={to}
-            end={to === "/"}
+            end={to === "/dashboard"}
             className={({ isActive }) =>
               cn(
                 "flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors",

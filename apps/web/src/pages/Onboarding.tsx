@@ -21,7 +21,7 @@ export function Onboarding() {
 
   // Si ya tiene tenant, fuera de aquí
   useEffect(() => {
-    if (!loading && tenant) navigate("/", { replace: true });
+    if (!loading && tenant) navigate("/inbox", { replace: true });
   }, [loading, tenant, navigate]);
 
   // Pre-rellenar el nombre con el local-part del email
@@ -37,7 +37,7 @@ export function Onboarding() {
     setBusy(true);
     try {
       await onboard({ name: name.trim() || undefined });
-      navigate("/", { replace: true });
+      navigate("/inbox", { replace: true });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -50,7 +50,7 @@ export function Onboarding() {
     setBusy(true);
     try {
       await onboard({ claim_slug: claimSlug.trim() });
-      navigate("/", { replace: true });
+      navigate("/inbox", { replace: true });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
