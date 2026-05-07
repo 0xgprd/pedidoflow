@@ -40,9 +40,22 @@ apps/web/.vite/
 .env
 .env.local
 .env.*.local
+!.env.example
 *.pem
 *.key
 secrets/
+gcp-credentials.json
+*-credentials.json
+
+# Runtime data (local dev)
+storage_local/
+*.db
+*.sqlite
+*.sqlite3
+
+# Customer data (catalogs, PDFs reales) — no commitear
+quimilock_catalog.csv
+**/customer_data/
 
 # IDE
 .vscode/
