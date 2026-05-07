@@ -71,10 +71,7 @@ def list_documents(
     items: list[DocumentListItem] = []
     for d in docs:
         # `has_offer_link` solo aplica a pedidos. None = N/A.
-        is_pedido = (
-            d.document_type == DocumentType.PEDIDO
-            or str(d.document_type) == "pedido"
-        )
+        is_pedido = d.document_type == DocumentType.PEDIDO or str(d.document_type) == "pedido"
         has_link = d.id in linked_order_ids if is_pedido else None
         items.append(
             DocumentListItem(
@@ -510,7 +507,9 @@ def revalidate_all(
             )
         ).all()
     )
-    catalog = list(session.exec(select(CatalogItem).where(CatalogItem.tenant_id == tenant_id)).all())
+    catalog = list(
+        session.exec(select(CatalogItem).where(CatalogItem.tenant_id == tenant_id)).all()
+    )
     rules = list(
         session.exec(select(WorkflowRule).where(WorkflowRule.tenant_id == tenant_id)).all()
     )

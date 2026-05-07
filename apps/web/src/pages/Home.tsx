@@ -9,7 +9,6 @@ import {
   ShieldX,
   Link2,
   CheckCircle2,
-  XCircle,
   Workflow as WorkflowIcon,
   BookOpen,
   TrendingUp,

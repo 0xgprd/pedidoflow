@@ -72,12 +72,6 @@ export function PDFViewer({
     [highlights],
   );
 
-  const normalizedActive = useMemo(() => {
-    if (!activePath) return null;
-    const h = normalizedHighlights.find((h) => h.path === activePath);
-    return h?.text ?? null;
-  }, [activePath, normalizedHighlights]);
-
   // Memoizar textRenderer para evitar re-render del text layer (que destruye
   // la selección del usuario en curso).
   const textRenderer = useMemo(() => {

@@ -67,9 +67,7 @@ def _make_doc(
     return doc
 
 
-def _add_catalog(
-    session: Session, tenant_id: UUID, ref: str, min_price: float | None
-) -> None:
+def _add_catalog(session: Session, tenant_id: UUID, ref: str, min_price: float | None) -> None:
     item = CatalogItem(
         tenant_id=tenant_id,
         reference=ref,
@@ -82,9 +80,7 @@ def _add_catalog(
     session.commit()
 
 
-def test_revalidate_no_docs_empty_result(
-    client: TestClient, tenant_id: UUID
-) -> None:
+def test_revalidate_no_docs_empty_result(client: TestClient, tenant_id: UUID) -> None:
     r = client.post("/api/v1/documents/revalidate", headers=_auth(tenant_id))
     assert r.status_code == 200
     body = r.json()
@@ -134,9 +130,7 @@ def test_revalidate_ignores_pending_docs(
     client: TestClient, tenant_id: UUID, session: Session
 ) -> None:
     """Solo procesa docs ya extraídos, no los que están en pending/processing/failed."""
-    _make_doc(
-        session, tenant_id, refs_with_prices=[("X", 1.0)], status=DocumentStatus.PENDING
-    )
+    _make_doc(session, tenant_id, refs_with_prices=[("X", 1.0)], status=DocumentStatus.PENDING)
     r = client.post("/api/v1/documents/revalidate", headers=_auth(tenant_id))
     assert r.json()["inspected"] == 0
 
@@ -145,21 +139,13 @@ def test_revalidate_only_extracted_flag(
     client: TestClient, tenant_id: UUID, session: Session
 ) -> None:
     """Con only_extracted=true, ignora approved/rejected; con false (default), los procesa."""
-    _make_doc(
-        session, tenant_id, refs_with_prices=[("A", 1.0)], status=DocumentStatus.APPROVED
-    )
-    _make_doc(
-        session, tenant_id, refs_with_prices=[("B", 2.0)], status=DocumentStatus.EXTRACTED
-    )
+    _make_doc(session, tenant_id, refs_with_prices=[("A", 1.0)], status=DocumentStatus.APPROVED)
+    _make_doc(session, tenant_id, refs_with_prices=[("B", 2.0)], status=DocumentStatus.EXTRACTED)
 
-    r = client.post(
-        "/api/v1/documents/revalidate?only_extracted=true", headers=_auth(tenant_id)
-    )
+    r = client.post("/api/v1/documents/revalidate?only_extracted=true", headers=_auth(tenant_id))
     assert r.json()["inspected"] == 1  # solo el extracted
 
-    r = client.post(
-        "/api/v1/documents/revalidate?only_extracted=false", headers=_auth(tenant_id)
-    )
+    r = client.post("/api/v1/documents/revalidate?only_extracted=false", headers=_auth(tenant_id))
     assert r.json()["inspected"] == 2  # extracted + approved
 
 
