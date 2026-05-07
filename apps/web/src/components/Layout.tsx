@@ -1,11 +1,14 @@
 import { Link, NavLink, Outlet } from "react-router-dom";
-import { Inbox, BookOpen, Home as HomeIcon } from "lucide-react";
+import { Inbox, BookOpen, Home as HomeIcon, Brain, Plug, Workflow } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
 const navItems = [
   { to: "/", label: "Inicio", icon: HomeIcon },
   { to: "/inbox", label: "Bandeja", icon: Inbox },
+  { to: "/memory", label: "Memoria", icon: Brain },
+  { to: "/rules", label: "Reglas", icon: Workflow },
+  { to: "/integrations", label: "Integraciones", icon: Plug },
   { to: "/catalog", label: "Catálogo", icon: BookOpen },
 ];
 
