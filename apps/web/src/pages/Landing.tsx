@@ -1,32 +1,37 @@
 import { useEffect } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowRight,
   Mail,
   Sparkles,
   CheckCircle2,
   ShieldCheck,
-  Globe2,
+  Plug,
   Languages,
   Workflow,
   FileSearch,
+  FileText,
+  Truck,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/AuthContext";
 
 /**
- * Landing pública. Si el user ya está logueado lo mandamos a /inbox.
+ * Landing pública. Si el user ya está logueado lo mandamos a /inbox,
+ * salvo que llegue con `?view=landing` (click explícito en el logo).
  */
 export function Landing() {
   const { session, tenant, loading } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const forceLanding = searchParams.get("view") === "landing";
 
   useEffect(() => {
-    if (loading) return;
+    if (loading || forceLanding) return;
     if (session && tenant) navigate("/inbox", { replace: true });
     else if (session && !tenant) navigate("/onboarding", { replace: true });
-  }, [session, tenant, loading, navigate]);
+  }, [session, tenant, loading, forceLanding, navigate]);
 
   return (
     <div className="min-h-screen bg-white text-zinc-900">
@@ -57,16 +62,16 @@ export function Landing() {
       <section className="px-6 py-20 lg:py-28 max-w-6xl mx-auto text-center">
         <div className="inline-flex items-center gap-1.5 rounded-full bg-violet-50 border border-violet-200 text-violet-900 text-xs px-3 py-1 mb-6">
           <Sparkles className="h-3 w-3" />
-          Para PYMEs industriales que usan Sage 200
+          Automatización documental para tu ERP
         </div>
-        <h1 className="text-4xl lg:text-6xl font-bold tracking-tight max-w-3xl mx-auto leading-tight">
-          Pedidos de tus clientes en Sage 200,{" "}
+        <h1 className="text-4xl lg:text-6xl font-bold tracking-tight max-w-4xl mx-auto leading-tight">
+          Tus pedidos y albaranes en el ERP,{" "}
           <span className="text-violet-600">sin copiar a mano</span>.
         </h1>
         <p className="mt-6 text-lg lg:text-xl text-zinc-600 max-w-2xl mx-auto">
-          Order Flow lee los pedidos PDF que llegan a tu correo, extrae los datos,
-          los valida contra tu catálogo y te los deja listos para aprobar — en
-          segundos en vez de horas.
+          Order Flow lee los PDF que llegan a tu correo — pedidos, albaranes,
+          facturas — extrae los datos, los valida contra tu catálogo y los carga
+          en tu ERP. En segundos en vez de horas.
         </p>
         <div className="mt-8 flex items-center justify-center gap-3">
           <Link to="/sign-up">
@@ -84,6 +89,24 @@ export function Landing() {
         <p className="mt-4 text-xs text-zinc-500">
           Sin tarjeta de crédito · Configura en 5 minutos
         </p>
+
+        {/* Logos / ERPs soportados */}
+        <div className="mt-14 pt-8 border-t border-zinc-100">
+          <p className="text-xs uppercase tracking-wider text-zinc-500 mb-4">
+            Compatible con tu ERP
+          </p>
+          <div className="flex flex-wrap items-center justify-center gap-x-8 gap-y-3 text-zinc-600 text-sm font-medium">
+            <span>Sage 200</span>
+            <span className="text-zinc-300">·</span>
+            <span>SAP Business One</span>
+            <span className="text-zinc-300">·</span>
+            <span>Microsoft Dynamics</span>
+            <span className="text-zinc-300">·</span>
+            <span>Odoo</span>
+            <span className="text-zinc-300">·</span>
+            <span className="text-zinc-500 italic">y más bajo demanda</span>
+          </div>
+        </div>
       </section>
 
       {/* Cómo funciona */}
@@ -97,20 +120,20 @@ export function Landing() {
             <Step
               n={1}
               icon={Mail}
-              title="Conecta tu Outlook"
-              text="Order Flow vigila la carpeta donde te llegan los pedidos. Cada PDF nuevo entra al pipeline automáticamente."
+              title="Conecta tu correo"
+              text="Order Flow vigila la carpeta de Outlook o Gmail donde te llegan los documentos. Cada PDF nuevo entra al pipeline automáticamente."
             />
             <Step
               n={2}
               icon={FileSearch}
-              title="La IA lee el pedido"
-              text="OCR + Claude extraen cliente, líneas, precios y referencias. Multi-idioma. Reconoce las etiquetas que TÚ enseñas."
+              title="La IA lee el documento"
+              text="OCR + IA extraen cliente, líneas, precios y referencias — sea un pedido, un albarán o una factura. Multi-idioma. Aprende las etiquetas que usa cada cliente."
             />
             <Step
               n={3}
               icon={CheckCircle2}
-              title="Apruebas y se va"
-              text="Revisas, validas contra tu catálogo y precios mínimos, y un click manda el pedido a Sage 200."
+              title="Apruebas y entra al ERP"
+              text="Validación contra tu catálogo, comparación con la oferta original, reglas a tu medida. Un click y el documento queda registrado en tu ERP."
             />
           </div>
         </div>
@@ -123,14 +146,25 @@ export function Landing() {
             Diseñado para tu realidad
           </h2>
           <p className="mt-3 text-zinc-600">
-            Cada cliente escribe los pedidos a su manera. Order Flow se adapta.
+            Cada cliente escribe los documentos a su manera. Cada empresa tiene
+            su ERP. Order Flow se adapta.
           </p>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <Feature
+            icon={Plug}
+            title="Cualquier ERP"
+            text="Sage 200, SAP Business One, Microsoft Dynamics, Odoo, Holded… Si tu ERP tiene API, Order Flow se conecta. ¿Otro? Cuéntanoslo y lo añadimos."
+          />
+          <Feature
+            icon={FileText}
+            title="Pedidos, albaranes y más"
+            text="No solo pedidos. Albaranes, facturas de proveedor, ofertas — cualquier documento que hoy alguien copia a mano de un PDF al ERP. Una sola plataforma."
+          />
+          <Feature
             icon={Languages}
             title="Multi-idioma sin esfuerzo"
-            text="Pedidos en francés, inglés, alemán, italiano. Enseñas qué etiqueta usa cada cliente para 'dirección de entrega' o 'transporte' una vez, y el sistema lo recuerda para siempre."
+            text="Documentos en francés, inglés, alemán, italiano. Enseñas qué etiqueta usa cada cliente para 'dirección de entrega' o 'transporte' una vez, y el sistema lo recuerda para siempre."
           />
           <Feature
             icon={ShieldCheck}
@@ -143,7 +177,7 @@ export function Landing() {
             text="¿Pedido de menos de 2.500€ sin transporte? Bloquéalo. ¿Cliente con riesgo de impago? Aviso. Tú defines las reglas, Order Flow las aplica."
           />
           <Feature
-            icon={Globe2}
+            icon={Truck}
             title="Pedido ↔ oferta automático"
             text="Cuando llega el pedido, Order Flow busca la oferta que enviaste y te muestra las diferencias en precio o cantidad — antes de que se cuelen al ERP."
           />
@@ -154,11 +188,11 @@ export function Landing() {
       <section className="px-6 py-20 bg-gradient-to-br from-violet-600 to-indigo-700 text-white text-center">
         <div className="max-w-3xl mx-auto">
           <h2 className="text-3xl lg:text-4xl font-bold tracking-tight">
-            Empieza con tu primer cliente hoy
+            Deja de copiar PDFs a tu ERP
           </h2>
           <p className="mt-4 text-violet-100 text-lg">
-            5 minutos para conectar Outlook y subir tu catálogo. El primer pedido
-            llega procesado en menos de un minuto.
+            5 minutos para conectar tu correo y subir tu catálogo. El primer
+            documento llega procesado en menos de un minuto.
           </p>
           <div className="mt-8">
             <Link to="/sign-up">
@@ -174,7 +208,7 @@ export function Landing() {
       {/* Footer */}
       <footer className="px-6 py-10 border-t text-sm text-zinc-500 text-center">
         <p>
-          Order Flow · Hecho en España · Especializado en Sage 200
+          Order Flow · Automatización documental para tu ERP · Hecho en España
         </p>
         <p className="mt-1 text-xs">
           MVP · v0.0.2 · Para soporte:{" "}
