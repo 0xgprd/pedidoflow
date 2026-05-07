@@ -678,6 +678,12 @@ def link_offer_manually(
     session.add(order)
     session.commit()
     session.refresh(link)
+
+    # Tras link manual, intentar también la expansión 1-línea-resumen
+    from app.workers.tasks import _maybe_expand_lines_from_offer
+
+    _maybe_expand_lines_from_offer(document_id, payload.offer_document_id, session=session)
+
     return link
 
 
@@ -746,6 +752,14 @@ def auto_link_offer(
     session.add(order)
     session.commit()
     session.refresh(link)
+
+    # Tras vincular: si el pedido es 1-línea-resumen y los totales con la oferta
+    # cuadran, expandir las líneas con las refs reales de la oferta. Hace
+    # innecesario re-procesar el pedido entero (no llama a OCR/Claude).
+    from app.workers.tasks import _maybe_expand_lines_from_offer
+
+    _maybe_expand_lines_from_offer(document_id, offer.id, session=session)
+
     return link
 
 

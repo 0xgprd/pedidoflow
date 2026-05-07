@@ -218,9 +218,10 @@ def extract_document(self, document_id: str) -> dict:
         if rule_hit_ids:
             session.commit()
 
-    # 7. Si es PEDIDO, intentar vincular con una oferta del tenant
+    # 7. Matching pedido↔oferta + posible expansión de líneas
     matched: dict[str, Any] | None = None
     expanded: dict[str, Any] | None = None
+    back_links: list[dict[str, Any]] = []
     if detected_type == DocumentType.PEDIDO:
         matched = _try_link_order_to_offer(doc_uuid, mapped_extracted, tenant_id)
         # 7b. Si la oferta vinculada existe Y el pedido tiene 1 línea-resumen
@@ -228,6 +229,10 @@ def extract_document(self, document_id: str) -> dict:
         # las refs reales de la oferta para poder pushearlas a Sage.
         if matched is not None:
             expanded = _maybe_expand_lines_from_offer(doc_uuid, UUID(matched["offer_id"]))
+    elif detected_type == DocumentType.OFERTA:
+        # 7c. Cuando llega una oferta DESPUÉS que su pedido (race en polling Outlook),
+        # busca pedidos huérfanos del tenant y vincula + expande retroactivamente.
+        back_links = _try_back_link_offer_to_orders(doc_uuid, tenant_id)
 
     log.info(
         "task.extract_document.ok",
@@ -238,6 +243,7 @@ def extract_document(self, document_id: str) -> dict:
         document_type=detected_type.value,
         matched_offer=matched["offer_id"] if matched else None,
         lines_expanded=expanded["expanded_to"] if expanded else None,
+        back_links=len(back_links) if back_links else 0,
     )
     return {
         "status": "extracted",
@@ -248,6 +254,7 @@ def extract_document(self, document_id: str) -> dict:
         "document_type": detected_type.value,
         "matched_offer": matched,
         "lines_expanded_from_offer": expanded,
+        "back_links": back_links,
     }
 
 
@@ -313,6 +320,94 @@ def _try_link_order_to_offer(
             "strategy": strategy.value,
             "score": score,
         }
+
+
+def _try_back_link_offer_to_orders(offer_doc_id: UUID, tenant_id: UUID) -> list[dict[str, Any]]:
+    """Cuando llega una oferta DESPUÉS que sus pedidos (race en Outlook polling),
+    busca pedidos huérfanos del tenant y vincula los que matcheen contra esta oferta.
+
+    Devuelve lista de `{order_id, strategy, score, expanded}` por cada link creado.
+    """
+    created: list[dict[str, Any]] = []
+    with Session(engine) as session:
+        # Pedidos del tenant SIN link existente
+        linked_order_ids = set(
+            session.exec(
+                select(DocumentLink.order_document_id).where(DocumentLink.tenant_id == tenant_id)
+            ).all()
+        )
+        orphan_orders = list(
+            session.exec(
+                select(Document).where(
+                    Document.tenant_id == tenant_id,
+                    Document.document_type == DocumentType.PEDIDO,
+                    Document.id != offer_doc_id,
+                )
+            ).all()
+        )
+        orphans = [d for d in orphan_orders if d.id not in linked_order_ids]
+        if not orphans:
+            return []
+
+        for order in orphans:
+            # Pedimos a find_matching_offer que evalúe SOLO esta oferta
+            # (truco: pasamos `exclude_doc_id=other_id`, pero más simple llamamos directo)
+            match = find_matching_offer(
+                session,
+                tenant_id=tenant_id,
+                order_extracted=order.extracted_json or {},
+                order_doc_id=order.id,
+            )
+            if match is None:
+                continue
+            offer, strategy, score = match
+            if offer.id != offer_doc_id:
+                # El mejor match para este pedido es OTRA oferta, no la nuestra
+                continue
+
+            comparison = compare_order_vs_offer(
+                order.extracted_json or {}, offer.extracted_json or {}
+            )
+            link = DocumentLink(
+                tenant_id=tenant_id,
+                order_document_id=order.id,
+                offer_document_id=offer.id,
+                match_strategy=strategy,
+                match_score=score,
+                comparison_result=comparison,
+            )
+            session.add(link)
+            summary = comparison.get("summary", {})
+            if any(
+                summary.get(k, 0) > 0
+                for k in (
+                    "price_discrepancies",
+                    "qty_discrepancies",
+                    "added_in_order",
+                    "removed_from_offer",
+                )
+            ):
+                order.has_discrepancies = True
+                session.add(order)
+            session.commit()
+            log.info(
+                "matching.back_linked",
+                order_id=str(order.id),
+                offer_id=str(offer.id),
+                strategy=strategy.value,
+                score=round(score, 3),
+            )
+            # Y expandir si aplica
+            expanded = _maybe_expand_lines_from_offer(order.id, offer.id, session=session)
+            created.append(
+                {
+                    "order_id": str(order.id),
+                    "strategy": strategy.value,
+                    "score": score,
+                    "expanded": expanded,
+                }
+            )
+    return created
 
 
 # Tolerancia entre el total del pedido (1 línea-resumen) y la suma de
