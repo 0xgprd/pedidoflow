@@ -78,7 +78,7 @@ function saveCache(items: DocumentListItem[]) {
 // =============================================================================
 
 type StatusFilter = "pending" | "approved" | "rejected" | "processing" | "all";
-type TypeFilter = "all" | DocumentType;
+type TypeFilter = DocumentType;
 
 const STATUS_FILTERS: Array<{ key: StatusFilter; label: string; matches: (d: DocumentListItem) => boolean }> = [
   { key: "pending", label: "Pendientes", matches: (d) => d.status === "extracted" },
@@ -99,7 +99,7 @@ export function Inbox() {
   const [error, setError] = useState<string | null>(null);
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("pending");
-  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("pedido");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async (silent = false) => {
@@ -139,14 +139,18 @@ export function Inbox() {
     return () => document.removeEventListener("visibilitychange", handleVisibility);
   }, [refresh]);
 
+  // Las ofertas son catálogo pasivo (auto-aprobadas), no aplica filtro por estado.
+  // Sólo se filtra por estado cuando estamos en la pestaña de Pedidos.
+  const showStatusTabs = typeFilter === "pedido";
+
   const filteredDocs = useMemo(() => {
     const statusFilterFn = STATUS_FILTERS.find((f) => f.key === statusFilter)!.matches;
     return docs.filter((d) => {
-      if (!statusFilterFn(d)) return false;
-      if (typeFilter !== "all" && (d.document_type ?? "desconocido") !== typeFilter) return false;
+      if ((d.document_type ?? "desconocido") !== typeFilter) return false;
+      if (showStatusTabs && !statusFilterFn(d)) return false;
       return true;
     });
-  }, [docs, statusFilter, typeFilter]);
+  }, [docs, statusFilter, typeFilter, showStatusTabs]);
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -197,28 +201,30 @@ export function Inbox() {
         <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-900">{error}</div>
       )}
 
-      {/* Tabs primarios — por estado. Conteos respetan el filtro de tipo
-          (si typeFilter=pedido, los conteos de pendientes/aprobados/etc.
-          excluyen ofertas). */}
-      <StatusTabs
-        value={statusFilter}
-        onChange={setStatusFilter}
-        docs={
-          typeFilter === "all"
-            ? docs
-            : docs.filter((d) => (d.document_type ?? "desconocido") === typeFilter)
-        }
-      />
+      {/* Tabs primarios por TIPO (Pedidos / Ofertas / Sin clasificar si hay).
+          Las ofertas son catálogo pasivo: en su tab no se filtra por estado. */}
+      <TypeTabs value={typeFilter} onChange={setTypeFilter} docs={docs} />
 
-      {/* Filtro secundario — chips por tipo */}
-      <TypeChips value={typeFilter} onChange={setTypeFilter} docs={docs} statusFilter={statusFilter} />
+      {/* Tabs secundarios por ESTADO — sólo para Pedidos.
+          Para Ofertas y Sin clasificar no aplican (todas auto-aprobadas / sin estado relevante). */}
+      {showStatusTabs && (
+        <StatusTabs
+          value={statusFilter}
+          onChange={setStatusFilter}
+          docs={docs.filter((d) => (d.document_type ?? "desconocido") === typeFilter)}
+        />
+      )}
 
       {filteredDocs.length === 0 ? (
         <div className="rounded-lg border bg-card p-12 text-center text-muted-foreground">
           <p className="text-sm">
-            {statusFilter === "pending"
-              ? "No hay documentos pendientes de revisar."
-              : "Sin resultados para los filtros actuales."}
+            {typeFilter === "oferta"
+              ? "No hay ofertas. Las ofertas se almacenan automáticamente cuando llegan al buzón."
+              : typeFilter === "desconocido"
+                ? "No hay documentos sin clasificar."
+                : showStatusTabs && statusFilter === "pending"
+                  ? "No hay pedidos pendientes de revisar."
+                  : "Sin resultados para los filtros actuales."}
           </p>
           {docs.length === 0 && (
             <p className="text-xs mt-2">Sube un PDF arriba o conecta Outlook (Integraciones).</p>
@@ -404,63 +410,65 @@ function StatusTabs({
 }
 
 // =============================================================================
-// Filtro chips por tipo
+// Tabs primarios por tipo (Pedidos / Ofertas / Sin clasificar si hay)
 // =============================================================================
 
-function TypeChips({
+function TypeTabs({
   value,
   onChange,
   docs,
-  statusFilter,
 }: {
   value: TypeFilter;
   onChange: (v: TypeFilter) => void;
   docs: DocumentListItem[];
-  statusFilter: StatusFilter;
 }) {
-  const statusFn = STATUS_FILTERS.find((f) => f.key === statusFilter)!.matches;
   const counts = useMemo(() => {
-    const filtered = docs.filter(statusFn);
-    const c = { all: filtered.length, pedido: 0, oferta: 0, desconocido: 0 } as Record<TypeFilter, number>;
-    for (const d of filtered) {
+    const c: Record<TypeFilter, number> = { pedido: 0, oferta: 0, desconocido: 0 };
+    for (const d of docs) {
       const t = d.document_type ?? "desconocido";
       c[t] = (c[t] ?? 0) + 1;
     }
     return c;
-  }, [docs, statusFn]);
+  }, [docs]);
 
-  const tabs: Array<{ key: TypeFilter; label: string }> = [
-    { key: "all", label: "Todos los tipos" },
-    { key: "pedido", label: "Pedidos" },
-    { key: "oferta", label: "Ofertas" },
-    { key: "desconocido", label: "Sin clasificar" },
+  // "Sin clasificar" sólo aparece si hay alguno (o si está activo, para no
+  // dejar al usuario sin pestaña al cambiar a un tab vacío).
+  const tabs: Array<{ key: TypeFilter; label: string; alwaysShow: boolean }> = [
+    { key: "pedido", label: "Pedidos", alwaysShow: true },
+    { key: "oferta", label: "Ofertas", alwaysShow: true },
+    { key: "desconocido", label: "Sin clasificar", alwaysShow: false },
   ];
 
   return (
-    <div className="flex flex-wrap gap-1.5">
-      {tabs.map((t) => {
-        const active = value === t.key;
-        const count = counts[t.key];
-        return (
-          <button
-            key={t.key}
-            onClick={() => onChange(t.key)}
-            disabled={count === 0 && t.key !== "all"}
-            className={cn(
-              "rounded-full border px-2.5 py-0.5 text-xs transition-colors inline-flex items-center gap-1.5",
-              active
-                ? "bg-zinc-900 text-white border-zinc-900"
-                : "bg-white text-muted-foreground border-zinc-300 hover:bg-muted",
-              count === 0 && t.key !== "all" && "opacity-40 cursor-not-allowed",
-            )}
-          >
-            {t.label}
-            <span className={cn("tabular-nums", active ? "text-white/80" : "text-zinc-500")}>
-              {count}
-            </span>
-          </button>
-        );
-      })}
+    <div className="flex gap-1 border-b">
+      {tabs
+        .filter((t) => t.alwaysShow || counts[t.key] > 0 || value === t.key)
+        .map((t) => {
+          const active = value === t.key;
+          const count = counts[t.key];
+          return (
+            <button
+              key={t.key}
+              onClick={() => onChange(t.key)}
+              className={cn(
+                "px-3 py-2 text-sm border-b-2 -mb-px transition-colors flex items-center gap-2",
+                active
+                  ? "border-foreground text-foreground font-medium"
+                  : "border-transparent text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {t.label}
+              <span
+                className={cn(
+                  "rounded-full text-xs px-1.5 py-0.5 tabular-nums",
+                  active ? "bg-foreground text-background" : "bg-muted",
+                )}
+              >
+                {count}
+              </span>
+            </button>
+          );
+        })}
     </div>
   );
 }
