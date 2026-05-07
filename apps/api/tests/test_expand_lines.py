@@ -339,6 +339,13 @@ def test_expand_when_order_total_is_offer_ttc_with_transport(session: Session) -
     assert abs(result["offer_total"] - 1546.98) < 0.01
     session.refresh(order)
     assert len(order.extracted_json["lineas"]) == 3
+    # Tras expandir, los totales del pedido deben reflejar la estructura de la
+    # oferta (subtotal HT + transporte + total TTC), no el "1546.98 todo junto"
+    # que escribió el cliente.
+    new_totales = order.extracted_json["totales"]
+    assert new_totales["subtotal_ht"] == 1257.4
+    assert new_totales["transporte"] == 289.58
+    assert new_totales["total_ttc"] == 1546.98
 
 
 def test_no_expand_when_offer_has_only_one_line(session: Session) -> None:

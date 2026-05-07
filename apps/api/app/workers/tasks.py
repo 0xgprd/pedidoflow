@@ -543,6 +543,14 @@ def _maybe_expand_lines_from_offer(
     # ¡Match! Expandimos las líneas del pedido con las de la oferta.
     original_line = order_lines[0]
     order_data["lineas"] = [dict(line) for line in offer_lines]
+
+    # Y también los totales: cuando el pedido es 1-línea-resumen, el cliente
+    # solo ha escrito UN número (subtotal/total/lo que sea) — los demás campos
+    # de totales del pedido están vacíos o mal. Copiamos los de la oferta para
+    # tener subtotal_ht / transporte / iva / total_ttc coherentes con las líneas.
+    original_totales = dict(order_totals)
+    order_data["totales"] = dict(offer_totals)
+
     order_data["lines_expanded_from_offer"] = {
         "offer_id": str(offer_doc_id),
         "original_line_count": 1,
@@ -553,6 +561,7 @@ def _maybe_expand_lines_from_offer(
         "offer_total_field": fc_label,
         "rel_diff": round(rel_diff, 4),
         "original_line_description": original_line.get("descripcion"),
+        "original_totales": original_totales,
     }
     # Variables que sigue usando el log.info de abajo
     order_total = oc
