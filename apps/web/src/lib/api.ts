@@ -631,6 +631,12 @@ export interface DashboardStats {
     approved_total_30d: number;
     currency: string;
   };
+  offers: {
+    count: number;
+    total_amount: number;
+    amount_30d: number;
+    currency: string;
+  };
   rules: {
     active_count: number;
     total_count: number;

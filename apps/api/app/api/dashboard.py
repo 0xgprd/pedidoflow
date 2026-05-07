@@ -56,14 +56,24 @@ def get_stats(
     blocked_by_rules = 0
     with_validation_blocking = 0
     needs_review = 0
+    # Aprobaciones / facturado: SOLO pedidos. Las ofertas se auto-aprueban como
+    # catálogo pasivo, no representan facturación real.
     approved_30d = 0
     rejected_30d = 0
     approved_total_30d = 0.0
+    # Pipeline de ofertas: cuánto dinero hay disponible para potencial facturación.
+    offers_total_amount = 0.0
+    offers_amount_30d = 0.0
+    offers_count = 0
 
     # Asegurar timezone-aware en created_at de DB (Postgres devuelve aware,
     # SQLite no — `tzinfo or replace` para igualar)
     def _aware(dt: datetime) -> datetime:
         return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+    def _ttc(doc: Document) -> float | None:
+        v = ((doc.extracted_json or {}).get("totales") or {}).get("total_ttc")
+        return float(v) if isinstance(v, int | float) else None
 
     for d in docs:
         # status es enum nativo Postgres → tiene .value; document_type es VARCHAR → ya es str
@@ -79,21 +89,32 @@ def get_stats(
         if created >= d30:
             last_30d += 1
         ext = d.extracted_json or {}
-        if d.status == DocumentStatus.EXTRACTED:
+        is_pedido = d.document_type == DocumentType.PEDIDO
+        is_oferta = d.document_type == DocumentType.OFERTA
+        if d.status == DocumentStatus.EXTRACTED and is_pedido:
             needs_review += 1
             if (ext.get("workflow") or {}).get("blocked"):
                 blocked_by_rules += 1
             if ((ext.get("validation") or {}).get("summary") or {}).get("blocking", 0) > 0:
                 with_validation_blocking += 1
         updated = _aware(d.updated_at)
-        if updated >= d30:
+        # Aprobaciones de pedidos en últimos 30d
+        if is_pedido and updated >= d30:
             if d.status == DocumentStatus.APPROVED:
                 approved_30d += 1
-                total_ttc = (ext.get("totales") or {}).get("total_ttc")
-                if isinstance(total_ttc, int | float):
-                    approved_total_30d += float(total_ttc)
+                ttc = _ttc(d)
+                if ttc is not None:
+                    approved_total_30d += ttc
             elif d.status == DocumentStatus.REJECTED:
                 rejected_30d += 1
+        # Pipeline de ofertas (todas las que están vigentes — extracted/approved)
+        if is_oferta and d.status in (DocumentStatus.EXTRACTED, DocumentStatus.APPROVED):
+            offers_count += 1
+            ttc = _ttc(d)
+            if ttc is not None:
+                offers_total_amount += ttc
+                if created >= d30:
+                    offers_amount_30d += ttc
 
     decided_30d = approved_30d + rejected_30d
     approval_rate = (approved_30d / decided_30d) if decided_30d > 0 else None
@@ -160,6 +181,12 @@ def get_stats(
         },
         "amounts": {
             "approved_total_30d": round(approved_total_30d, 2),
+            "currency": "EUR",
+        },
+        "offers": {
+            "count": offers_count,
+            "total_amount": round(offers_total_amount, 2),
+            "amount_30d": round(offers_amount_30d, 2),
             "currency": "EUR",
         },
         "rules": {

@@ -12,6 +12,7 @@ import {
   Workflow as WorkflowIcon,
   BookOpen,
   TrendingUp,
+  Briefcase,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -70,30 +71,20 @@ export function Home() {
 
       {stats && (
         <>
-          {/* Hero stats — 4 KPIs principales */}
+          {/* Hero stats — 4 KPIs principales (sólo pedidos: las ofertas son
+              catálogo pasivo y no representan facturación) */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <KpiCard
-              icon={InboxIcon}
-              label="Documentos totales"
-              value={stats.documents.total}
-              sub={`${stats.documents.last_7d} en últimos 7 días`}
-              accent="zinc"
-            />
-            <KpiCard
-              icon={AlertTriangle}
-              label="A revisar"
-              value={stats.needs_review.count}
-              sub={
-                stats.needs_review.blocked_by_rules > 0
-                  ? `${stats.needs_review.blocked_by_rules} bloqueados por reglas`
-                  : "extracted, pendientes de aprobación"
-              }
-              accent={stats.needs_review.blocked_by_rules > 0 ? "red" : "amber"}
-              link="/inbox?status=extracted"
+              icon={TrendingUp}
+              label="€ facturado (30d)"
+              value={formatMoney(stats.amounts.approved_total_30d, stats.amounts.currency)}
+              sub="suma TTC de pedidos aprobados"
+              accent="emerald"
+              isMoney
             />
             <KpiCard
               icon={CheckCircle2}
-              label="Aprobados (30d)"
+              label="Pedidos aprobados (30d)"
               value={stats.approval_rate.approved_30d}
               sub={
                 stats.approval_rate.rate !== null
@@ -103,12 +94,25 @@ export function Home() {
               accent="emerald"
             />
             <KpiCard
-              icon={TrendingUp}
-              label="€ aprobado (30d)"
-              value={formatMoney(stats.amounts.approved_total_30d, stats.amounts.currency)}
-              sub="suma TTC pedidos aprobados"
+              icon={AlertTriangle}
+              label="Pedidos a revisar"
+              value={stats.needs_review.count}
+              sub={
+                stats.needs_review.blocked_by_rules > 0
+                  ? `${stats.needs_review.blocked_by_rules} bloqueados por reglas`
+                  : "pendientes de aprobación"
+              }
+              accent={stats.needs_review.blocked_by_rules > 0 ? "red" : "amber"}
+              link="/inbox?status=extracted"
+            />
+            <KpiCard
+              icon={Briefcase}
+              label="€ en ofertas"
+              value={formatMoney(stats.offers.total_amount, stats.offers.currency)}
+              sub={`${stats.offers.count} ofertas activas en pipeline`}
               accent="violet"
               isMoney
+              link="/inbox?type=oferta"
             />
           </div>
 
