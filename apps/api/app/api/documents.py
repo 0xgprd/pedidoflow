@@ -1,0 +1,633 @@
+"""Endpoints de Documents — pedidos PDF en el pipeline de extracción."""
+
+from datetime import UTC, datetime
+from typing import Annotated, Any
+from uuid import UUID, uuid4
+
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import load_only
+from sqlmodel import Session, select
+
+from app.api.deps import get_current_tenant_id
+from app.core.db import get_session
+from app.core.logging import get_logger
+from app.models.document import (
+    Document,
+    DocumentListItem,
+    DocumentRead,
+    DocumentSource,
+    DocumentStatus,
+    DocumentType,
+)
+from app.models.document_link import DocumentLink, DocumentLinkRead, MatchStrategy
+from app.services.classification import classify_document
+from app.services.matching import compare_order_vs_offer, find_matching_offer
+from app.services.storage import get_storage_service
+
+log = get_logger(__name__)
+router = APIRouter(prefix="/documents", tags=["documents"])
+
+MAX_PDF_BYTES = 20 * 1024 * 1024  # 20 MB
+ALLOWED_CONTENT_TYPES = {"application/pdf"}
+
+
+@router.get("", response_model=list[DocumentListItem])
+def list_documents(
+    tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
+    session: Annotated[Session, Depends(get_session)],
+    status_filter: Annotated[DocumentStatus | None, Query(alias="status")] = None,
+    type_filter: Annotated[DocumentType | None, Query(alias="type")] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[Document]:
+    """Lista paginada de documentos del tenant actual.
+
+    Devuelve `DocumentListItem` (sin `extracted_json` ni `ocr_result`) para
+    que la bandeja no descargue 10-50× más datos de los que necesita.
+    Para el detalle completo usa `GET /documents/{id}`.
+    """
+    query = select(Document).where(Document.tenant_id == tenant_id)
+    if status_filter is not None:
+        query = query.where(Document.status == status_filter)
+    if type_filter is not None:
+        query = query.where(Document.document_type == type_filter)
+    query = query.order_by(Document.created_at.desc()).offset(offset).limit(limit)  # type: ignore[attr-defined]
+    return list(session.exec(query).all())
+
+
+@router.get("/{document_id}", response_model=DocumentRead)
+def get_document(
+    document_id: UUID,
+    tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
+    session: Annotated[Session, Depends(get_session)],
+) -> Document:
+    """Detalle de un documento.
+
+    Excluye `ocr_result` y `raw_text` del SELECT (pueden ser 50-200KB cada uno).
+    Si en el futuro hace falta exponerlos, hacer endpoint dedicado.
+    """
+    query = (
+        select(Document)
+        .where(Document.id == document_id)
+        .options(
+            load_only(
+                Document.id,  # type: ignore[arg-type]
+                Document.tenant_id,  # type: ignore[arg-type]
+                Document.source,  # type: ignore[arg-type]
+                Document.status,  # type: ignore[arg-type]
+                Document.pdf_key,  # type: ignore[arg-type]
+                Document.original_filename,  # type: ignore[arg-type]
+                Document.source_email,  # type: ignore[arg-type]
+                Document.extracted_json,  # type: ignore[arg-type]
+                Document.extraction_error,  # type: ignore[arg-type]
+                Document.created_at,  # type: ignore[arg-type]
+                Document.updated_at,  # type: ignore[arg-type]
+                Document.processed_at,  # type: ignore[arg-type]
+            )
+        )
+    )
+    doc = session.exec(query).first()
+    if doc is None or doc.tenant_id != tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    return doc
+
+
+@router.get("/{document_id}/pdf")
+def get_document_pdf(
+    document_id: UUID,
+    tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
+    session: Annotated[Session, Depends(get_session)],
+) -> Response:
+    """Devuelve el contenido binario del PDF (con tenant check)."""
+    doc = session.get(Document, document_id)
+    if doc is None or doc.tenant_id != tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    storage = get_storage_service()
+    try:
+        pdf_bytes = storage.download_pdf(doc.pdf_key)
+    except FileNotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail=f"PDF storage object missing: {doc.pdf_key}",
+        ) from e
+
+    filename = doc.original_filename or f"{doc.id}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
+@router.post(
+    "",
+    response_model=DocumentRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_document(
+    tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
+    session: Annotated[Session, Depends(get_session)],
+    file: Annotated[UploadFile, File(description="PDF del pedido")],
+) -> Document:
+    """Sube un PDF, lo guarda en storage y crea Document `pending`.
+
+    Encola tarea Celery para extracción IA (asíncrona).
+    """
+    if file.content_type not in ALLOWED_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=f"Only PDF allowed (got {file.content_type})",
+        )
+
+    body = await file.read()
+    if len(body) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Empty file"
+        )
+    if len(body) > MAX_PDF_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File exceeds {MAX_PDF_BYTES} bytes",
+        )
+
+    storage = get_storage_service()
+    object_id = uuid4()
+    pdf_key = storage.upload_pdf(
+        tenant_id=tenant_id,
+        object_id=object_id,
+        body=body,
+        original_filename=file.filename,
+    )
+
+    doc = Document(
+        tenant_id=tenant_id,
+        source=DocumentSource.UPLOAD,
+        status=DocumentStatus.PENDING,
+        pdf_key=pdf_key,
+        original_filename=file.filename,
+    )
+    session.add(doc)
+    session.commit()
+    session.refresh(doc)
+
+    # Encolar extracción IA (no romper si broker no está disponible).
+    try:
+        from app.workers.tasks import extract_document  # local import: evita circulares
+
+        extract_document.delay(str(doc.id))
+        log.info("document.uploaded.enqueued", document_id=str(doc.id))
+    except Exception as e:
+        log.warning(
+            "document.uploaded.enqueue_failed",
+            document_id=str(doc.id),
+            error=str(e),
+            hint="¿Redis arrancado? El Document queda en pending — re-procesar manualmente.",
+        )
+
+    return doc
+
+
+# =============================================================================
+# Edición / aprobación
+# =============================================================================
+
+
+class ExtractedJsonPatch(BaseModel):
+    """Body del PATCH /documents/{id}/extracted — sustituye `extracted_json`."""
+
+    extracted_json: dict[str, Any] = Field(
+        ...,
+        description="JSON corregido por el revisor humano. Sustituye el extraído por la IA.",
+    )
+
+
+class StatusPatch(BaseModel):
+    """Body del PATCH /documents/{id}/status — cambio de estado por el revisor."""
+
+    status: DocumentStatus
+    reason: str | None = Field(default=None, max_length=500)
+
+
+_EDITABLE_STATUSES = {
+    DocumentStatus.EXTRACTED,
+    DocumentStatus.APPROVED,
+    DocumentStatus.REJECTED,
+}
+
+_APPROVAL_TRANSITIONS: dict[DocumentStatus, set[DocumentStatus]] = {
+    DocumentStatus.EXTRACTED: {DocumentStatus.APPROVED, DocumentStatus.REJECTED},
+    DocumentStatus.APPROVED: {DocumentStatus.EXTRACTED, DocumentStatus.REJECTED},
+    DocumentStatus.REJECTED: {DocumentStatus.EXTRACTED, DocumentStatus.APPROVED},
+}
+
+
+@router.patch("/{document_id}/extracted", response_model=DocumentRead)
+def patch_extracted(
+    document_id: UUID,
+    payload: ExtractedJsonPatch,
+    tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
+    session: Annotated[Session, Depends(get_session)],
+) -> Document:
+    """Guarda correcciones humanas sobre `extracted_json`.
+
+    Solo permitido cuando el documento ya está extraído (no en pending/processing).
+    """
+    doc = session.get(Document, document_id)
+    if doc is None or doc.tenant_id != tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    if doc.status not in _EDITABLE_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot edit document in status '{doc.status}' — wait until extraction finishes",
+        )
+
+    doc.extracted_json = payload.extracted_json
+    doc.updated_at = datetime.now(UTC)
+    session.add(doc)
+    session.commit()
+    session.refresh(doc)
+    log.info("document.extracted.patched", document_id=str(document_id))
+    return doc
+
+
+# =============================================================================
+# Cambio manual de tipo + reclasificación bulk
+# =============================================================================
+
+
+class TypePatch(BaseModel):
+    document_type: DocumentType
+
+
+@router.patch("/{document_id}/type", response_model=DocumentRead)
+def patch_document_type(
+    document_id: UUID,
+    payload: TypePatch,
+    tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
+    session: Annotated[Session, Depends(get_session)],
+) -> Document:
+    """Cambio manual del tipo de documento (pedido / oferta / desconocido).
+
+    Si pasa a `pedido` y no tiene oferta vinculada, intenta auto-link.
+    Si pasa a `oferta` y tenía link como pedido, lo desvincula (ya no es pedido).
+    """
+    doc = session.get(Document, document_id)
+    if doc is None or doc.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    old_type = doc.document_type
+    doc.document_type = payload.document_type
+    doc.updated_at = datetime.now(UTC)
+    session.add(doc)
+    session.commit()
+    session.refresh(doc)
+
+    # Si dejó de ser pedido → quitar el link como pedido si existía
+    if old_type == DocumentType.PEDIDO and payload.document_type != DocumentType.PEDIDO:
+        existing = session.exec(
+            select(DocumentLink).where(DocumentLink.order_document_id == document_id)
+        ).first()
+        if existing is not None:
+            session.delete(existing)
+            session.commit()
+
+    # Si pasó a pedido → intentar auto-link
+    if (
+        payload.document_type == DocumentType.PEDIDO
+        and old_type != DocumentType.PEDIDO
+    ):
+        existing = session.exec(
+            select(DocumentLink).where(DocumentLink.order_document_id == document_id)
+        ).first()
+        if existing is None:
+            match = find_matching_offer(
+                session,
+                tenant_id=tenant_id,
+                order_extracted=doc.extracted_json or {},
+                order_doc_id=document_id,
+            )
+            if match is not None:
+                offer, strategy, score = match
+                comparison = compare_order_vs_offer(
+                    doc.extracted_json or {}, offer.extracted_json or {}
+                )
+                session.add(
+                    DocumentLink(
+                        tenant_id=tenant_id,
+                        order_document_id=document_id,
+                        offer_document_id=offer.id,
+                        match_strategy=strategy,
+                        match_score=score,
+                        comparison_result=comparison,
+                    )
+                )
+                session.commit()
+
+    log.info(
+        "document.type.patched",
+        document_id=str(document_id),
+        old_type=old_type.value,
+        new_type=payload.document_type.value,
+    )
+    return doc
+
+
+# =============================================================================
+# Reclasificar bulk (heurística filename + Claude)
+# =============================================================================
+
+
+class ReclassifyResult(BaseModel):
+    inspected: int
+    changed: int
+    by_type: dict[str, int]
+    relinked: int  # cuántos pedidos consiguieron vincular oferta tras reclassify
+
+
+@router.post("/reclassify", response_model=ReclassifyResult)
+def reclassify_all(
+    tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
+    session: Annotated[Session, Depends(get_session)],
+    only_unknown: Annotated[bool, Query()] = True,
+) -> ReclassifyResult:
+    """Re-aplica `classify_document` a los documentos del tenant.
+
+    - `only_unknown=true` (default): solo recalcula los que están en `desconocido`.
+    - `only_unknown=false`: recalcula TODOS (cuidado, puede recategorizar pedidos manuales).
+
+    Tras re-clasificar, intenta auto-vincular pedidos nuevos a ofertas existentes.
+    """
+    query = select(Document).where(Document.tenant_id == tenant_id)
+    if only_unknown:
+        query = query.where(Document.document_type == DocumentType.DESCONOCIDO)
+
+    docs = list(session.exec(query).all())
+    by_type: dict[str, int] = {"pedido": 0, "oferta": 0, "desconocido": 0}
+    changed = 0
+    new_pedidos: list[Document] = []
+
+    for doc in docs:
+        new_type = classify_document(
+            filename=doc.original_filename,
+            extracted_json=doc.extracted_json,
+        )
+        if new_type != doc.document_type:
+            doc.document_type = new_type
+            doc.updated_at = datetime.now(UTC)
+            session.add(doc)
+            changed += 1
+            if new_type == DocumentType.PEDIDO:
+                new_pedidos.append(doc)
+        by_type[new_type.value] += 1
+
+    session.commit()
+
+    # Re-intentar matching para pedidos que cambiaron a "pedido" sin link previo
+    relinked = 0
+    for order in new_pedidos:
+        existing_link = session.exec(
+            select(DocumentLink).where(DocumentLink.order_document_id == order.id)
+        ).first()
+        if existing_link is not None:
+            continue
+        match = find_matching_offer(
+            session,
+            tenant_id=tenant_id,
+            order_extracted=order.extracted_json or {},
+            order_doc_id=order.id,
+        )
+        if match is None:
+            continue
+        offer, strategy, score = match
+        comparison = compare_order_vs_offer(
+            order.extracted_json or {}, offer.extracted_json or {}
+        )
+        link = DocumentLink(
+            tenant_id=tenant_id,
+            order_document_id=order.id,
+            offer_document_id=offer.id,
+            match_strategy=strategy,
+            match_score=score,
+            comparison_result=comparison,
+        )
+        session.add(link)
+        relinked += 1
+    session.commit()
+
+    log.info(
+        "documents.reclassified",
+        tenant_id=str(tenant_id),
+        inspected=len(docs),
+        changed=changed,
+        relinked=relinked,
+        by_type=by_type,
+    )
+    return ReclassifyResult(
+        inspected=len(docs), changed=changed, by_type=by_type, relinked=relinked
+    )
+
+
+# =============================================================================
+# Link pedido ↔ oferta
+# =============================================================================
+
+
+class LinkOfferPayload(BaseModel):
+    """Vincular manualmente un pedido a una oferta."""
+
+    offer_document_id: UUID
+
+
+def _comparison_has_discrepancies(comparison: dict[str, Any] | None) -> bool:
+    if not comparison:
+        return False
+    summary = comparison.get("summary") or {}
+    return any(
+        summary.get(k, 0) > 0
+        for k in ("price_discrepancies", "qty_discrepancies", "added_in_order", "removed_from_offer")
+    )
+
+
+@router.get("/{document_id}/link", response_model=DocumentLinkRead | None)
+def get_document_link(
+    document_id: UUID,
+    tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
+    session: Annotated[Session, Depends(get_session)],
+) -> DocumentLink | None:
+    """Devuelve el DocumentLink (pedido↔oferta) si existe."""
+    doc = session.get(Document, document_id)
+    if doc is None or doc.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return session.exec(
+        select(DocumentLink).where(DocumentLink.order_document_id == document_id)
+    ).first()
+
+
+@router.post("/{document_id}/link", response_model=DocumentLinkRead, status_code=201)
+def link_offer_manually(
+    document_id: UUID,
+    payload: LinkOfferPayload,
+    tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
+    session: Annotated[Session, Depends(get_session)],
+) -> DocumentLink:
+    """Vincula un pedido a una oferta manualmente (sustituye link previo si lo hay)."""
+    order = session.get(Document, document_id)
+    if order is None or order.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="Order document not found")
+    if order.document_type != DocumentType.PEDIDO:
+        raise HTTPException(
+            status_code=400, detail=f"Document is type '{order.document_type}', not pedido"
+        )
+    offer = session.get(Document, payload.offer_document_id)
+    if offer is None or offer.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="Offer document not found")
+    if offer.document_type != DocumentType.OFERTA:
+        raise HTTPException(
+            status_code=400, detail=f"Target document is type '{offer.document_type}', not oferta"
+        )
+
+    # Borrar link previo si existe
+    existing = session.exec(
+        select(DocumentLink).where(DocumentLink.order_document_id == document_id)
+    ).first()
+    if existing is not None:
+        session.delete(existing)
+        session.flush()
+
+    comparison = compare_order_vs_offer(order.extracted_json or {}, offer.extracted_json or {})
+    link = DocumentLink(
+        tenant_id=tenant_id,
+        order_document_id=document_id,
+        offer_document_id=payload.offer_document_id,
+        match_strategy=MatchStrategy.MANUAL,
+        match_score=1.0,
+        comparison_result=comparison,
+    )
+    session.add(link)
+    order.has_discrepancies = _comparison_has_discrepancies(comparison)
+    session.add(order)
+    session.commit()
+    session.refresh(link)
+    return link
+
+
+@router.delete("/{document_id}/link", status_code=204)
+def unlink_offer(
+    document_id: UUID,
+    tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
+    session: Annotated[Session, Depends(get_session)],
+) -> None:
+    doc = session.get(Document, document_id)
+    if doc is None or doc.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="Document not found")
+    existing = session.exec(
+        select(DocumentLink).where(DocumentLink.order_document_id == document_id)
+    ).first()
+    if existing is None:
+        return
+    session.delete(existing)
+    doc.has_discrepancies = False
+    session.add(doc)
+    session.commit()
+
+
+@router.post("/{document_id}/auto-link", response_model=DocumentLinkRead | None)
+def auto_link_offer(
+    document_id: UUID,
+    tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
+    session: Annotated[Session, Depends(get_session)],
+) -> DocumentLink | None:
+    """Re-intenta el matching automático (útil cuando han llegado nuevas ofertas)."""
+    order = session.get(Document, document_id)
+    if order is None or order.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if order.document_type != DocumentType.PEDIDO:
+        raise HTTPException(
+            status_code=400, detail=f"Document is type '{order.document_type}', not pedido"
+        )
+
+    match = find_matching_offer(
+        session,
+        tenant_id=tenant_id,
+        order_extracted=order.extracted_json or {},
+        order_doc_id=document_id,
+    )
+    if match is None:
+        return None
+    offer, strategy, score = match
+    comparison = compare_order_vs_offer(order.extracted_json or {}, offer.extracted_json or {})
+
+    existing = session.exec(
+        select(DocumentLink).where(DocumentLink.order_document_id == document_id)
+    ).first()
+    if existing is not None:
+        session.delete(existing)
+        session.flush()
+    link = DocumentLink(
+        tenant_id=tenant_id,
+        order_document_id=document_id,
+        offer_document_id=offer.id,
+        match_strategy=strategy,
+        match_score=score,
+        comparison_result=comparison,
+    )
+    session.add(link)
+    order.has_discrepancies = _comparison_has_discrepancies(comparison)
+    session.add(order)
+    session.commit()
+    session.refresh(link)
+    return link
+
+
+@router.patch("/{document_id}/status", response_model=DocumentRead)
+def patch_status(
+    document_id: UUID,
+    payload: StatusPatch,
+    tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
+    session: Annotated[Session, Depends(get_session)],
+) -> Document:
+    """Cambia el estado del documento (aprobar/rechazar/reabrir).
+
+    Bloqueado por reglas workflow: si `extracted_json.workflow.blocked == true`
+    y se intenta aprobar, devuelve 409 con la lista de reglas bloqueantes.
+    """
+    doc = session.get(Document, document_id)
+    if doc is None or doc.tenant_id != tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    allowed = _APPROVAL_TRANSITIONS.get(doc.status, set())
+    if payload.status not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Invalid transition: {doc.status} -> {payload.status}. Allowed: {sorted(allowed)}",
+        )
+
+    # Bloqueo workflow al aprobar
+    if payload.status == DocumentStatus.APPROVED:
+        wf = (doc.extracted_json or {}).get("workflow") or {}
+        if wf.get("blocked"):
+            blockers = wf.get("blocking_rules") or []
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "message": "Aprobación bloqueada por reglas de workflow.",
+                    "blocking_rules": blockers,
+                },
+            )
+
+    doc.status = payload.status
+    if payload.reason:
+        doc.extraction_error = f"[{payload.status}] {payload.reason}"
+    doc.updated_at = datetime.now(UTC)
+    session.add(doc)
+    session.commit()
+    session.refresh(doc)
+    log.info(
+        "document.status.patched",
+        document_id=str(document_id),
+        new_status=payload.status,
+    )
+    return doc
