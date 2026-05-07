@@ -104,8 +104,7 @@ def validate_against_catalog(
             result["level"] = LEVEL_BLOCKING
             diff = item.min_price - actual
             result["message"] = (
-                f"Precio {actual} < mínimo {item.min_price} ({item.currency}). "
-                f"Diferencia: -{diff}"
+                f"Precio {actual} < mínimo {item.min_price} ({item.currency}). Diferencia: -{diff}"
             )
             blocking += 1
         else:

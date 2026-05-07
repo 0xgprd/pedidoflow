@@ -20,11 +20,25 @@ engine = create_engine(
 
 
 def init_db() -> None:
-    """Crea tablas (solo dev). En prod usar Alembic."""
-    # Importar modelos para que SQLModel los registre.
-    # noqa porque solo queremos el side-effect del import.
+    """Bootstrap inicial — solo si la DB está vacía.
+
+    En cuanto haya alguna tabla nuestra, NO toca nada (las migraciones reales
+    se aplican via `alembic upgrade head`). Esto evita que `create_all` cree
+    índices/constraints inconsistentes con los que Alembic gestiona.
+    """
+    from sqlalchemy import inspect
+
+    # Importar modelos para que SQLModel los registre (side-effect).
     from app import models  # noqa: F401
 
+    insp = inspect(engine)
+    existing = set(insp.get_table_names())
+    # Si ya hay tablas nuestras, asumimos schema gestionado por Alembic.
+    our_tables = {t.name for t in SQLModel.metadata.tables.values()}
+    if existing & our_tables:
+        return
+
+    # Schema vacío → bootstrap inicial (útil en tests y primer deploy)
     SQLModel.metadata.create_all(engine)
 
 

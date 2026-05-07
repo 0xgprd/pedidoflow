@@ -26,11 +26,11 @@ class IntegrationProvider(StrEnum):
 
 
 class IntegrationStatus(StrEnum):
-    PENDING = "pending"     # OAuth iniciado, esperando callback
-    ACTIVE = "active"       # token válido, polling activo
-    EXPIRED = "expired"     # refresh token caducado, hay que reconectar
-    ERROR = "error"         # error persistente (ver last_error)
-    DISABLED = "disabled"   # desactivado por el usuario
+    PENDING = "pending"  # OAuth iniciado, esperando callback
+    ACTIVE = "active"  # token válido, polling activo
+    EXPIRED = "expired"  # refresh token caducado, hay que reconectar
+    ERROR = "error"  # error persistente (ver last_error)
+    DISABLED = "disabled"  # desactivado por el usuario
 
 
 class EmailIntegration(TimestampMixin, table=True):
@@ -38,7 +38,9 @@ class EmailIntegration(TimestampMixin, table=True):
 
     __tablename__ = "email_integrations"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "provider", "email", name="uq_email_integration_tenant_email"),
+        UniqueConstraint(
+            "tenant_id", "provider", "email", name="uq_email_integration_tenant_email"
+        ),
         Index("ix_email_integration_tenant", "tenant_id"),
     )
 

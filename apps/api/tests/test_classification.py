@@ -72,9 +72,7 @@ def test_classify_falls_back_to_json_offer_number() -> None:
     """Si Claude no dice tipo pero el JSON tiene numero_oferta TL... → oferta."""
     result = classify_document(
         filename="documento.pdf",
-        extracted_json={
-            "pedido": {"numero_oferta": "TL260422-113", "numero_pedido_cliente": None}
-        },
+        extracted_json={"pedido": {"numero_oferta": "TL260422-113", "numero_pedido_cliente": None}},
     )
     assert result == DocumentType.OFERTA
 

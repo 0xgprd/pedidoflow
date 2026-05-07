@@ -33,10 +33,10 @@ from app.models.base import TimestampMixin
 
 
 class RuleAction(StrEnum):
-    BLOCK = "block"          # impide aprobación
-    WARN = "warn"            # solo aviso
+    BLOCK = "block"  # impide aprobación
+    WARN = "warn"  # solo aviso
     SET_STATUS = "set_status"  # cambia status automáticamente
-    ADD_NOTE = "add_note"    # añade nota visible
+    ADD_NOTE = "add_note"  # añade nota visible
 
 
 class RuleScope(StrEnum):
@@ -51,9 +51,7 @@ class WorkflowRule(TimestampMixin, table=True):
     """Regla de workflow per-tenant."""
 
     __tablename__ = "workflow_rules"
-    __table_args__ = (
-        Index("ix_workflow_rules_tenant_enabled", "tenant_id", "enabled"),
-    )
+    __table_args__ = (Index("ix_workflow_rules_tenant_enabled", "tenant_id", "enabled"),)
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     tenant_id: UUID = Field(foreign_key="tenants.id", index=True, nullable=False)

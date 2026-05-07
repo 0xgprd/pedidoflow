@@ -117,9 +117,7 @@ def find_matching_offer(
                 return offer, MatchStrategy.EXACT_OFFER_NUMBER, 1.0
 
     # 2. CLIENT_LINES_SIMILARITY
-    order_client = _normalize_client_name(
-        (order_extracted.get("cliente") or {}).get("nombre")
-    )
+    order_client = _normalize_client_name((order_extracted.get("cliente") or {}).get("nombre"))
     order_refs = _line_refs(order_extracted)
     if not order_client or not order_refs:
         return None
@@ -128,9 +126,7 @@ def find_matching_offer(
     candidates = _candidate_offers(session, tenant_id, exclude_doc_id=order_doc_id)
     for offer in candidates:
         offer_extracted = offer.extracted_json or {}
-        offer_client = _normalize_client_name(
-            (offer_extracted.get("cliente") or {}).get("nombre")
-        )
+        offer_client = _normalize_client_name((offer_extracted.get("cliente") or {}).get("nombre"))
         if not offer_client:
             continue
         # Cliente debe coincidir (substring bidireccional para tolerar variantes)
@@ -150,16 +146,12 @@ def find_matching_offer(
     return None
 
 
-def _candidate_offers(
-    session: Session, tenant_id: UUID, *, exclude_doc_id: UUID
-) -> list[Document]:
+def _candidate_offers(session: Session, tenant_id: UUID, *, exclude_doc_id: UUID) -> list[Document]:
     """Ofertas del tenant que aún no están vinculadas a un pedido."""
     # session.exec con un single-column select devuelve scalars directamente
     linked_offer_ids = set(
         session.exec(
-            select(DocumentLink.offer_document_id).where(
-                DocumentLink.tenant_id == tenant_id
-            )
+            select(DocumentLink.offer_document_id).where(DocumentLink.tenant_id == tenant_id)
         ).all()
     )
     query = select(Document).where(

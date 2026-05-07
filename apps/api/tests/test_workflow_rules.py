@@ -83,8 +83,17 @@ def test_not_contains_with_any() -> None:
 
 
 def test_exists() -> None:
-    assert evaluate_condition({"field": "pedido.numero_oferta", "operator": "exists"}, {"pedido": {"numero_oferta": "X"}}) is True
-    assert evaluate_condition({"field": "pedido.numero_oferta", "operator": "exists"}, {"pedido": {}}) is False
+    assert (
+        evaluate_condition(
+            {"field": "pedido.numero_oferta", "operator": "exists"},
+            {"pedido": {"numero_oferta": "X"}},
+        )
+        is True
+    )
+    assert (
+        evaluate_condition({"field": "pedido.numero_oferta", "operator": "exists"}, {"pedido": {}})
+        is False
+    )
 
 
 # =============================================================================
@@ -230,9 +239,7 @@ def test_create_and_list_rule(client: TestClient, tenant_id: UUID) -> None:
         "scope": "pedido",
         "action": "block",
         "action_params": {"message": "Falta transporte"},
-        "conditions": [
-            {"field": "totales.subtotal_ht", "operator": "lt", "value": 2500}
-        ],
+        "conditions": [{"field": "totales.subtotal_ht", "operator": "lt", "value": 2500}],
     }
     r = client.post("/api/v1/workflow-rules", json=payload, headers=_auth(tenant_id))
     assert r.status_code == 201, r.text
@@ -251,9 +258,7 @@ def test_test_rule_endpoint(client: TestClient, tenant_id: UUID) -> None:
             "name": "test",
             "scope": "pedido",
             "action": "warn",
-            "conditions": [
-                {"field": "totales.subtotal_ht", "operator": "lt", "value": 2500}
-            ],
+            "conditions": [{"field": "totales.subtotal_ht", "operator": "lt", "value": 2500}],
         },
         "extracted_json": {"totales": {"subtotal_ht": 1000}, "lineas": []},
         "document_type": "pedido",

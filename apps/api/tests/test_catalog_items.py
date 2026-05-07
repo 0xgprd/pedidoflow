@@ -82,7 +82,9 @@ def test_isolation_by_tenant(client: TestClient, tenant_id: UUID) -> None:
         json={"reference": "TF-75", "min_price": "10"},
         headers=_auth(tenant_id),
     )
-    other = UUID(client.post("/api/v1/tenants", json={"name": "Other", "slug": "other"}).json()["id"])
+    other = UUID(
+        client.post("/api/v1/tenants", json={"name": "Other", "slug": "other"}).json()["id"]
+    )
     r = client.get("/api/v1/catalog-items", headers=_auth(other))
     assert r.json() == []
 
@@ -110,10 +112,7 @@ def test_upload_csv_basic(client: TestClient, tenant_id: UUID) -> None:
 
 def test_upload_csv_semicolon_european(client: TestClient, tenant_id: UUID) -> None:
     """Tolera CSVs europeos (separador ;, decimal ,)."""
-    csv_content = (
-        "reference;description;min_price;currency\n"
-        "TF-75;Tubo flexible 75;12,50;EUR\n"
-    )
+    csv_content = "reference;description;min_price;currency\nTF-75;Tubo flexible 75;12,50;EUR\n"
     files = {"file": ("c.csv", io.BytesIO(csv_content.encode()), "text/csv")}
     r = client.post("/api/v1/catalog-items/upload", files=files, headers=_auth(tenant_id))
     assert r.status_code == 200, r.text
@@ -152,7 +151,9 @@ def test_upload_csv_quimilock_format(client: TestClient, tenant_id: UUID) -> Non
         'GF-1,,"€0,85","0,012",1,\n'
     )
     # Encoding utf-8-sig para simular BOM como Excel exporta
-    files = {"file": ("c.csv", io.BytesIO(b"\xef\xbb\xbf" + csv_content.encode("utf-8")), "text/csv")}
+    files = {
+        "file": ("c.csv", io.BytesIO(b"\xef\xbb\xbf" + csv_content.encode("utf-8")), "text/csv")
+    }
     r = client.post("/api/v1/catalog-items/upload", files=files, headers=_auth(tenant_id))
     assert r.status_code == 200, r.text
     body = r.json()
@@ -179,7 +180,7 @@ def test_upload_csv_alias_french(client: TestClient, tenant_id: UUID) -> None:
 
 def test_upload_csv_thousands_separator(client: TestClient, tenant_id: UUID) -> None:
     """Maneja '1.234,56' (formato europeo con miles)."""
-    csv_content = "reference,min_price\nBIG-1,\"1.234,56\"\n"
+    csv_content = 'reference,min_price\nBIG-1,"1.234,56"\n'
     files = {"file": ("c.csv", io.BytesIO(csv_content.encode()), "text/csv")}
     r = client.post("/api/v1/catalog-items/upload", files=files, headers=_auth(tenant_id))
     assert r.status_code == 200, r.text
@@ -234,7 +235,12 @@ def test_validate_above_min_is_ok() -> None:
 def test_validate_unknown_reference() -> None:
     extracted = {
         "lineas": [
-            {"referencia": "DESCONOCIDA", "precio_unitario": 1.0, "cantidad": 1, "descripcion": "x"},
+            {
+                "referencia": "DESCONOCIDA",
+                "precio_unitario": 1.0,
+                "cantidad": 1,
+                "descripcion": "x",
+            },
         ]
     }
     catalog = [_catalog_item("TF-75", "10.00")]
@@ -268,4 +274,10 @@ def test_validate_min_price_undefined_is_warning() -> None:
 
 def test_validate_no_lines() -> None:
     result = validate_against_catalog({"lineas": []}, [])
-    assert result["summary"] == {"blocking": 0, "warnings": 0, "ok": 0, "unknown": 0, "total_lines": 0}
+    assert result["summary"] == {
+        "blocking": 0,
+        "warnings": 0,
+        "ok": 0,
+        "unknown": 0,
+        "total_lines": 0,
+    }

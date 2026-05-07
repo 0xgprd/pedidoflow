@@ -130,7 +130,9 @@ def test_rule(
         action=payload.rule.action,
         action_params=payload.rule.action_params,
     )
-    result = evaluate_rules([fake_rule], payload.extracted_json, document_type=payload.document_type)
+    result = evaluate_rules(
+        [fake_rule], payload.extracted_json, document_type=payload.document_type
+    )
     # Quitar campos internos
     result.pop("_matched_uuid_ids", None)
     return result

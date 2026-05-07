@@ -258,8 +258,7 @@ def evaluate_rules(
     applicable = [
         r
         for r in rules
-        if r.enabled
-        and (r.scope == RuleScope.ALL or r.scope.value == document_type)
+        if r.enabled and (r.scope == RuleScope.ALL or r.scope.value == document_type)
     ]
     applicable.sort(key=lambda r: r.priority)
 

@@ -240,7 +240,12 @@ def _parse_bool(s: str | None) -> bool:
 async def upload_csv(
     tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
     session: Annotated[Session, Depends(get_session)],
-    file: Annotated[UploadFile, File(description="CSV con columnas: reference, description, unit, min_price, list_price, currency, active, notes (acepta alias en español/francés)")],
+    file: Annotated[
+        UploadFile,
+        File(
+            description="CSV con columnas: reference, description, unit, min_price, list_price, currency, active, notes (acepta alias en español/francés)"
+        ),
+    ],
 ) -> UploadResult:
     """Importa un catálogo desde CSV.
 

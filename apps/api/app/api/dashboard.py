@@ -68,7 +68,9 @@ def get_stats(
     for d in docs:
         # status es enum nativo Postgres → tiene .value; document_type es VARCHAR → ya es str
         status_key = d.status.value if hasattr(d.status, "value") else str(d.status)
-        type_key = d.document_type.value if hasattr(d.document_type, "value") else str(d.document_type)
+        type_key = (
+            d.document_type.value if hasattr(d.document_type, "value") else str(d.document_type)
+        )
         by_status[status_key] = by_status.get(status_key, 0) + 1
         by_type[type_key] = by_type.get(type_key, 0) + 1
         created = _aware(d.created_at)
@@ -87,7 +89,7 @@ def get_stats(
         if updated >= d30:
             if d.status == DocumentStatus.APPROVED:
                 approved_30d += 1
-                total_ttc = ((ext.get("totales") or {}).get("total_ttc"))
+                total_ttc = (ext.get("totales") or {}).get("total_ttc")
                 if isinstance(total_ttc, int | float):
                     approved_total_30d += float(total_ttc)
             elif d.status == DocumentStatus.REJECTED:
@@ -98,9 +100,12 @@ def get_stats(
 
     # Linking: pedidos vinculados
     pedidos_count = by_type["pedido"]
-    linked_orders = session.exec(
-        select(func.count(DocumentLink.id)).where(DocumentLink.tenant_id == tenant_id)  # type: ignore[arg-type]
-    ).first() or 0
+    linked_orders = (
+        session.exec(
+            select(func.count(DocumentLink.id)).where(DocumentLink.tenant_id == tenant_id)  # type: ignore[arg-type]
+        ).first()
+        or 0
+    )
     pedidos_with_offer = int(linked_orders) if linked_orders else 0
     pedidos_without_offer = max(pedidos_count - pedidos_with_offer, 0)
 
@@ -112,15 +117,21 @@ def get_stats(
     top_rules = sorted(active_rules, key=lambda r: r.hits, reverse=True)[:5]
 
     # Catálogo
-    catalog_count = session.exec(
-        select(func.count(CatalogItem.id)).where(CatalogItem.tenant_id == tenant_id)  # type: ignore[arg-type]
-    ).first() or 0
-    catalog_no_min = session.exec(
-        select(func.count(CatalogItem.id)).where(  # type: ignore[arg-type]
-            CatalogItem.tenant_id == tenant_id,
-            CatalogItem.min_price.is_(None),  # type: ignore[union-attr]
-        )
-    ).first() or 0
+    catalog_count = (
+        session.exec(
+            select(func.count(CatalogItem.id)).where(CatalogItem.tenant_id == tenant_id)  # type: ignore[arg-type]
+        ).first()
+        or 0
+    )
+    catalog_no_min = (
+        session.exec(
+            select(func.count(CatalogItem.id)).where(  # type: ignore[arg-type]
+                CatalogItem.tenant_id == tenant_id,
+                CatalogItem.min_price.is_(None),  # type: ignore[union-attr]
+            )
+        ).first()
+        or 0
+    )
 
     # Documentos recientes (últimos 10)
     recent = sorted(docs, key=lambda d: _aware(d.created_at), reverse=True)[:10]
@@ -165,7 +176,9 @@ def get_stats(
                 "id": str(d.id),
                 "original_filename": d.original_filename,
                 "status": d.status.value if hasattr(d.status, "value") else str(d.status),
-                "document_type": d.document_type.value if hasattr(d.document_type, "value") else str(d.document_type),
+                "document_type": d.document_type.value
+                if hasattr(d.document_type, "value")
+                else str(d.document_type),
                 "created_at": d.created_at.isoformat(),
             }
             for d in recent

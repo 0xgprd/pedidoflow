@@ -16,7 +16,6 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { TenantBanner } from "@/components/TenantBanner";
 import { dashboardApi, getTenantId } from "@/lib/api";
 import type { DashboardStats } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -45,8 +44,6 @@ export function Home() {
 
   return (
     <div className="space-y-5 max-w-6xl">
-      <TenantBanner onChanged={refresh} />
-
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Inicio</h1>

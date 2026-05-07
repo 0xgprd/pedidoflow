@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import { Workflow, Plus, Trash2, RefreshCw, Save, X, Power, PowerOff } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { TenantBanner } from "@/components/TenantBanner";
 import { getTenantId, rulesApi } from "@/lib/api";
 import type {
   RuleAction,
@@ -129,8 +128,6 @@ export function Rules() {
 
   return (
     <div className="space-y-5">
-      <TenantBanner onChanged={refresh} />
-
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">

@@ -75,7 +75,16 @@ pedidoflow/
 cd apps/api
 .venv\Scripts\activate
 uvicorn app.main:app --reload      # http://localhost:8000/docs
-pytest                             # 4 tests pasando
+pytest                             # 120+ tests pasando
+
+# Migraciones DB (Alembic)
+cd apps/api
+.venv\Scripts\activate
+alembic current                    # revisión actual aplicada
+alembic upgrade head               # aplicar pendientes
+alembic check                      # detectar drift entre modelos y DB
+alembic revision -m "descripcion"  # crear migración manual
+# autogenerate desactivado para type/comment/server_default — los cambios reales se hacen a mano
 
 # Frontend
 cd apps/web
