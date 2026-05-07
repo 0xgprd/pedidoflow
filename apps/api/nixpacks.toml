@@ -5,7 +5,12 @@
 nixPkgs = ["python312", "gcc"]
 
 [phases.install]
-cmds = ["python -m pip install --upgrade pip", "pip install -e ."]
+# `pip install .` (no editable) evita el "metadata-generation-failed" típico de
+# Hatchling en build contexts aislados. Editable mode solo nos sirve en local.
+cmds = [
+    "python -m pip install --upgrade pip setuptools wheel",
+    "pip install ."
+]
 
 [start]
 cmd = "uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips=*"
