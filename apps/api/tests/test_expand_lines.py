@@ -255,6 +255,92 @@ def test_expand_within_1pct_tolerance(session: Session) -> None:
     assert result["expanded_to"] == 2
 
 
+def test_expand_when_order_total_is_offer_ttc_with_transport(session: Session) -> None:
+    """Caso real Quimilock: pedido escribe 1546.98€ como subtotal_ht pero
+    realmente es el total con transporte. Debe matchear contra
+    oferta.subtotal_ht + oferta.transporte (= oferta.total_ttc)."""
+    tid = uuid4()
+    from app.models.tenant import Tenant
+
+    session.add(Tenant(id=tid, name="Q", slug=f"q-{tid.hex[:6]}"))
+    session.commit()
+
+    offer_lines = [
+        {
+            "referencia": "T1-400",
+            "cantidad": 35,
+            "precio_unitario": 10.9,
+            "importe_linea": 381.5,
+            "descripcion": "T1-400 BLEU",
+        },
+        {
+            "referencia": "T-A",
+            "cantidad": 100,
+            "precio_unitario": 0.8,
+            "importe_linea": 80.0,
+            "descripcion": "T-A",
+        },
+        {
+            "referencia": "TR-400",
+            "cantidad": 20,
+            "precio_unitario": 39.795,
+            "importe_linea": 795.9,
+            "descripcion": "TR-400",
+        },
+    ]
+    offer = Document(
+        tenant_id=tid,
+        source=DocumentSource.UPLOAD,
+        status=DocumentStatus.EXTRACTED,
+        document_type=DocumentType.OFERTA,
+        pdf_key=f"{tid}/offer.pdf",
+        original_filename="offer.pdf",
+        extracted_json={
+            "cliente": {"nombre": "Cliente"},
+            "pedido": {},
+            "lineas": offer_lines,
+            "totales": {
+                "subtotal_ht": 1257.4,
+                "transporte": 289.58,
+                "total_ttc": 1546.98,
+                "iva": None,
+            },
+            "confianza_global": "alta",
+            "source_texts": {},
+        },
+    )
+    session.add(offer)
+    session.commit()
+    session.refresh(offer)
+
+    # Pedido: 1 línea con "subtotal_ht=1546.98" pero ese 1546.98 incluye transporte
+    order = _make_doc(
+        session,
+        tenant_id=tid,
+        doc_type=DocumentType.PEDIDO,
+        lineas=[
+            {
+                "referencia": "ACH_IM",
+                "descripcion": "SELON DEVIS TLxxx",
+                "cantidad": 1,
+                "precio_unitario": 1546.98,
+                "importe_linea": 1546.98,
+            }
+        ],
+        subtotal_ht=1546.98,
+    )
+
+    result = _maybe_expand_lines_from_offer(order.id, offer.id, session=session)
+
+    assert result is not None
+    assert result["expanded_to"] == 3
+    # Verifica que el match fue order.subtotal_ht vs offer.subtotal_ht+transporte (o total_ttc)
+    assert result["order_total"] == 1546.98
+    assert abs(result["offer_total"] - 1546.98) < 0.01
+    session.refresh(order)
+    assert len(order.extracted_json["lineas"]) == 3
+
+
 def test_no_expand_when_offer_has_only_one_line(session: Session) -> None:
     """Si oferta tiene 1 línea también, no aporta nada expandir."""
     tid = uuid4()

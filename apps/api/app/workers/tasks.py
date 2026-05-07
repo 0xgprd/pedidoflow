@@ -374,33 +374,65 @@ def _maybe_expand_lines_from_offer(
     if len(offer_lines) < 2:
         return None
 
-    # Total del pedido — preferimos subtotal_ht (sin IVA, sin transporte)
-    order_total_raw = (order_data.get("totales") or {}).get("subtotal_ht")
-    if order_total_raw is None:
-        # Fallback: sumar la única línea (que típicamente lleva el total)
-        order_total_raw = _line_amount(order_lines[0])
-    try:
-        order_total = float(order_total_raw)
-    except (TypeError, ValueError):
-        return None
-    if order_total <= 0:
+    # Candidatos de "total del pedido" (el cliente puede haber escrito HT, TTC,
+    # o solo el importe de la única línea — no asumimos qué métrica usó).
+    order_totals = order_data.get("totales") or {}
+    order_candidates: list[tuple[str, float]] = []
+    for label, raw in (
+        ("order.subtotal_ht", order_totals.get("subtotal_ht")),
+        ("order.total_ttc", order_totals.get("total_ttc")),
+        ("order.line[0].importe", _line_amount(order_lines[0])),
+    ):
+        try:
+            v = float(raw) if raw is not None else 0.0
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            order_candidates.append((label, v))
+    if not order_candidates:
         return None
 
-    # Total de la oferta = suma de importes de líneas (no usar totales.subtotal_ht
-    # de la oferta porque puede incluir transporte; queremos solo el material).
-    offer_total = sum(_line_amount(line) for line in offer_lines)
-    if offer_total <= 0:
+    # Candidatos de "total de la oferta" — material solo, material+transporte, o total con IVA.
+    offer_totals = offer_data.get("totales") or {}
+    offer_lines_sum = sum(_line_amount(line) for line in offer_lines)
+    offer_subtotal = offer_totals.get("subtotal_ht")
+    offer_transporte = offer_totals.get("transporte") or 0
+    offer_ttc = offer_totals.get("total_ttc")
+    offer_candidates: list[tuple[str, float]] = []
+    for label, raw in (
+        ("offer.lines_sum", offer_lines_sum),
+        ("offer.subtotal_ht", offer_subtotal),
+        ("offer.subtotal_ht+transporte", (offer_subtotal or 0) + (offer_transporte or 0)),
+        ("offer.total_ttc", offer_ttc),
+    ):
+        try:
+            v = float(raw) if raw is not None else 0.0
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            offer_candidates.append((label, v))
+    if not offer_candidates:
         return None
 
-    # Tolerancia 1%
-    rel_diff = abs(order_total - offer_total) / max(order_total, offer_total)
+    # Buscamos el mejor par (menor diferencia relativa)
+    best: tuple[str, float, str, float, float] | None = (
+        None  # (oc_label, oc, fc_label, fc, rel_diff)
+    )
+    for oc_label, oc in order_candidates:
+        for fc_label, fc in offer_candidates:
+            rel_diff = abs(oc - fc) / max(oc, fc)
+            if best is None or rel_diff < best[4]:
+                best = (oc_label, oc, fc_label, fc, rel_diff)
+
+    assert best is not None
+    oc_label, oc, fc_label, fc, rel_diff = best
+
     if rel_diff > EXPAND_TOTAL_TOLERANCE:
         log.info(
             "expand.totals_mismatch",
             order_id=str(order_doc_id),
             offer_id=str(offer_doc_id),
-            order_total=order_total,
-            offer_total=offer_total,
+            best_pair=f"{oc_label}={oc} vs {fc_label}={fc}",
             rel_diff=round(rel_diff, 4),
         )
         return None
@@ -412,10 +444,16 @@ def _maybe_expand_lines_from_offer(
         "offer_id": str(offer_doc_id),
         "original_line_count": 1,
         "expanded_to": len(offer_lines),
-        "order_total": order_total,
-        "offer_total": offer_total,
+        "order_total": oc,
+        "order_total_field": oc_label,
+        "offer_total": fc,
+        "offer_total_field": fc_label,
+        "rel_diff": round(rel_diff, 4),
         "original_line_description": original_line.get("descripcion"),
     }
+    # Variables que sigue usando el log.info de abajo
+    order_total = oc
+    offer_total = fc
 
     # Re-validar contra catálogo (las nuevas líneas pueden disparar bloqueos)
     catalog = list(
