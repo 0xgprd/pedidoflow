@@ -12,6 +12,7 @@ from sqlmodel import Session, select
 from app.api.deps import get_current_tenant_id
 from app.core.db import get_session
 from app.core.logging import get_logger
+from app.models.catalog_item import CatalogItem
 from app.models.document import (
     Document,
     DocumentListItem,
@@ -21,9 +22,12 @@ from app.models.document import (
     DocumentType,
 )
 from app.models.document_link import DocumentLink, DocumentLinkRead, MatchStrategy
+from app.models.workflow_rule import WorkflowRule
 from app.services.classification import classify_document
 from app.services.matching import compare_order_vs_offer, find_matching_offer
+from app.services.rules_engine import evaluate_rules
 from app.services.storage import get_storage_service
+from app.services.validation import validate_against_catalog
 
 log = get_logger(__name__)
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -40,12 +44,14 @@ def list_documents(
     type_filter: Annotated[DocumentType | None, Query(alias="type")] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
-) -> list[Document]:
+) -> list[DocumentListItem]:
     """Lista paginada de documentos del tenant actual.
 
     Devuelve `DocumentListItem` (sin `extracted_json` ni `ocr_result`) para
     que la bandeja no descargue 10-50× más datos de los que necesita.
     Para el detalle completo usa `GET /documents/{id}`.
+
+    Calcula on-the-fly `has_offer_link` para pedidos (1 query extra al tenant).
     """
     query = select(Document).where(Document.tenant_id == tenant_id)
     if status_filter is not None:
@@ -53,7 +59,43 @@ def list_documents(
     if type_filter is not None:
         query = query.where(Document.document_type == type_filter)
     query = query.order_by(Document.created_at.desc()).offset(offset).limit(limit)  # type: ignore[attr-defined]
-    return list(session.exec(query).all())
+    docs = list(session.exec(query).all())
+
+    # Set de pedidos que tienen oferta vinculada (1 query, in-memory join)
+    linked_order_ids: set[UUID] = set(
+        session.exec(
+            select(DocumentLink.order_document_id).where(DocumentLink.tenant_id == tenant_id)
+        ).all()
+    )
+
+    items: list[DocumentListItem] = []
+    for d in docs:
+        # `has_offer_link` solo aplica a pedidos. None = N/A.
+        is_pedido = (
+            d.document_type == DocumentType.PEDIDO
+            or str(d.document_type) == "pedido"
+        )
+        has_link = d.id in linked_order_ids if is_pedido else None
+        items.append(
+            DocumentListItem(
+                id=d.id,
+                tenant_id=d.tenant_id,
+                source=d.source,
+                status=d.status,
+                document_type=d.document_type,
+                original_filename=d.original_filename,
+                source_email=d.source_email,
+                extraction_error=d.extraction_error,
+                has_blocking_issues=d.has_blocking_issues,
+                has_discrepancies=d.has_discrepancies,
+                has_offer_link=has_link,
+                created_at=d.created_at,
+                updated_at=d.updated_at,
+                processed_at=d.processed_at,
+                email_received_at=d.email_received_at,
+            )
+        )
+    return items
 
 
 @router.get("/{document_id}", response_model=DocumentRead)
@@ -143,9 +185,7 @@ async def upload_document(
 
     body = await file.read()
     if len(body) == 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Empty file"
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty file")
     if len(body) > MAX_PDF_BYTES:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -295,10 +335,7 @@ def patch_document_type(
             session.commit()
 
     # Si pasó a pedido → intentar auto-link
-    if (
-        payload.document_type == DocumentType.PEDIDO
-        and old_type != DocumentType.PEDIDO
-    ):
+    if payload.document_type == DocumentType.PEDIDO and old_type != DocumentType.PEDIDO:
         existing = session.exec(
             select(DocumentLink).where(DocumentLink.order_document_id == document_id)
         ).first()
@@ -402,9 +439,7 @@ def reclassify_all(
         if match is None:
             continue
         offer, strategy, score = match
-        comparison = compare_order_vs_offer(
-            order.extracted_json or {}, offer.extracted_json or {}
-        )
+        comparison = compare_order_vs_offer(order.extracted_json or {}, offer.extracted_json or {})
         link = DocumentLink(
             tenant_id=tenant_id,
             order_document_id=order.id,
@@ -431,6 +466,115 @@ def reclassify_all(
 
 
 # =============================================================================
+# Bulk re-validación contra catálogo + reglas workflow
+# =============================================================================
+
+
+class RevalidateResult(BaseModel):
+    inspected: int  # docs revisados
+    updated: int  # docs cuyo extracted_json cambió
+    blocking_now: int  # docs que AHORA tienen bloqueos (validation o workflow)
+    blocking_before: int  # docs que YA tenían bloqueos antes
+    new_blocks: int  # docs que pasaron de OK a bloqueado
+    cleared_blocks: int  # docs que pasaron de bloqueado a OK
+
+
+@router.post("/revalidate", response_model=RevalidateResult)
+def revalidate_all(
+    tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
+    session: Annotated[Session, Depends(get_session)],
+    only_extracted: Annotated[bool, Query()] = False,
+) -> RevalidateResult:
+    """Re-aplica validación catálogo + reglas workflow a docs ya extraídos.
+
+    Útil tras subir un catálogo nuevo (precios mínimos cambiaron) o tras editar
+    reglas workflow. Recalcula `extracted_json.validation` y `extracted_json.workflow`
+    + `has_blocking_issues` sin re-llamar a OCR/Claude (rápido y gratis).
+
+    - `only_extracted=true`: solo procesa docs en estado `extracted` (recién extraídos
+      pendientes de aprobación).
+    - `only_extracted=false` (default): procesa también `approved` y `rejected` para
+      reflejar la "verdad actual" en históricos (no cambia su status).
+    """
+    valid_states = (
+        [DocumentStatus.EXTRACTED]
+        if only_extracted
+        else [DocumentStatus.EXTRACTED, DocumentStatus.APPROVED, DocumentStatus.REJECTED]
+    )
+    docs = list(
+        session.exec(
+            select(Document).where(
+                Document.tenant_id == tenant_id,
+                Document.status.in_(valid_states),  # type: ignore[attr-defined]
+                Document.extracted_json.is_not(None),  # type: ignore[union-attr]
+            )
+        ).all()
+    )
+    catalog = list(session.exec(select(CatalogItem).where(CatalogItem.tenant_id == tenant_id)).all())
+    rules = list(
+        session.exec(select(WorkflowRule).where(WorkflowRule.tenant_id == tenant_id)).all()
+    )
+
+    updated = blocking_now = blocking_before = new_blocks = cleared_blocks = 0
+
+    for doc in docs:
+        original = doc.extracted_json or {}
+        was_blocked = bool(doc.has_blocking_issues)
+        if was_blocked:
+            blocking_before += 1
+
+        new_data = dict(original)
+        new_data["validation"] = validate_against_catalog(new_data, catalog)
+        # `document_type` puede venir como Enum (Postgres) o str (SQLite tests)
+        doc_type_str = (
+            doc.document_type.value
+            if hasattr(doc.document_type, "value")
+            else str(doc.document_type)
+        )
+        workflow_result = evaluate_rules(rules, new_data, document_type=doc_type_str)
+        # `_matched_uuid_ids` es interno (lista de IDs para incrementar hits) — no
+        # lo persistimos en extracted_json. Lo eliminamos antes de guardar.
+        workflow_result.pop("_matched_uuid_ids", None)
+        new_data["workflow"] = workflow_result
+
+        is_blocked = bool(workflow_result.get("blocked")) or (
+            ((new_data.get("validation") or {}).get("summary") or {}).get("blocking", 0) > 0
+        )
+        if is_blocked:
+            blocking_now += 1
+
+        if new_data != original or doc.has_blocking_issues != is_blocked:
+            doc.extracted_json = new_data
+            doc.has_blocking_issues = is_blocked
+            doc.updated_at = datetime.now(UTC)
+            session.add(doc)
+            updated += 1
+            if is_blocked and not was_blocked:
+                new_blocks += 1
+            elif was_blocked and not is_blocked:
+                cleared_blocks += 1
+
+    session.commit()
+    log.info(
+        "documents.revalidated",
+        tenant_id=str(tenant_id),
+        inspected=len(docs),
+        updated=updated,
+        blocking_now=blocking_now,
+        new_blocks=new_blocks,
+        cleared_blocks=cleared_blocks,
+    )
+    return RevalidateResult(
+        inspected=len(docs),
+        updated=updated,
+        blocking_now=blocking_now,
+        blocking_before=blocking_before,
+        new_blocks=new_blocks,
+        cleared_blocks=cleared_blocks,
+    )
+
+
+# =============================================================================
 # Link pedido ↔ oferta
 # =============================================================================
 
@@ -447,7 +591,31 @@ def _comparison_has_discrepancies(comparison: dict[str, Any] | None) -> bool:
     summary = comparison.get("summary") or {}
     return any(
         summary.get(k, 0) > 0
-        for k in ("price_discrepancies", "qty_discrepancies", "added_in_order", "removed_from_offer")
+        for k in (
+            "price_discrepancies",
+            "qty_discrepancies",
+            "added_in_order",
+            "removed_from_offer",
+        )
+    )
+
+
+@router.get("/{document_id}/linked-orders", response_model=list[DocumentLinkRead])
+def get_linked_orders(
+    document_id: UUID,
+    tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
+    session: Annotated[Session, Depends(get_session)],
+) -> list[DocumentLink]:
+    """Lista los pedidos vinculados a una oferta (para navegar oferta→pedido)."""
+    doc = session.get(Document, document_id)
+    if doc is None or doc.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return list(
+        session.exec(
+            select(DocumentLink)
+            .where(DocumentLink.tenant_id == tenant_id)
+            .where(DocumentLink.offer_document_id == document_id)
+        ).all()
     )
 
 

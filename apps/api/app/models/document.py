@@ -112,8 +112,12 @@ class DocumentRead(SQLModel):
 class DocumentListItem(SQLModel):
     """Schema ligero para listas — sin extracted_json/ocr_result (10-50× menos payload).
 
-    Incluye flags pre-calculados (`has_blocking_issues`, `has_discrepancies`) para
-    que la bandeja muestre iconos de aviso sin cargar el JSON entero.
+    Incluye flags pre-calculados para que la bandeja muestre iconos de aviso sin
+    cargar el JSON entero:
+    - `has_blocking_issues`: validation con blockings o workflow.blocked
+    - `has_discrepancies`: pedido vinculado a oferta con diferencias precio/cantidad
+    - `has_offer_link`: pedido tiene oferta vinculada (None para no-pedidos).
+      Se calcula on-the-fly en `list_documents` (no es columna de DB).
     """
 
     id: UUID
@@ -126,6 +130,7 @@ class DocumentListItem(SQLModel):
     extraction_error: str | None
     has_blocking_issues: bool
     has_discrepancies: bool
+    has_offer_link: bool | None = None
     created_at: datetime
     updated_at: datetime
     processed_at: datetime | None

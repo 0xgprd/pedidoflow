@@ -1,9 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { Upload, RefreshCw, FileText, FileCheck2, HelpCircle, AlertTriangle, Mail } from "lucide-react";
+import {
+  Upload,
+  RefreshCw,
+  FileText,
+  FileCheck2,
+  HelpCircle,
+  AlertTriangle,
+  Mail,
+  ShieldX,
+  Link2Off,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { TenantBanner } from "@/components/TenantBanner";
 import { api, getTenantId } from "@/lib/api";
 import type { DocumentListItem, DocumentStatus, DocumentType } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -43,7 +52,7 @@ const POLL_INTERVAL_ACTIVE_MS = 2500;
 const POLL_INTERVAL_IDLE_MS = 15000;
 
 // Bump al cambiar el shape de DocumentListItem (invalida caches antiguas)
-const CACHE_KEY = "pedidoflow.inbox.cache.v3";
+const CACHE_KEY = "pedidoflow.inbox.cache.v4";
 
 function loadCache(): DocumentListItem[] {
   try {
@@ -157,8 +166,6 @@ export function Inbox() {
 
   return (
     <div className="space-y-5">
-      <TenantBanner onChanged={() => refresh()} />
-
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Bandeja</h1>
@@ -246,7 +253,7 @@ export function Inbox() {
                       </Link>
                     </td>
                     <td className="px-3 py-3">
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex flex-wrap items-center gap-1.5">
                         <span
                           className={cn(
                             "inline-block rounded-full px-2 py-0.5 text-xs font-medium",
@@ -255,21 +262,7 @@ export function Inbox() {
                         >
                           {STATUS_LABEL[doc.status]}
                         </span>
-                        {(doc.has_blocking_issues || doc.has_discrepancies) && (
-                          <span
-                            title={
-                              doc.has_blocking_issues
-                                ? "Bloqueado por reglas o precio bajo mínimo"
-                                : "Discrepancias con la oferta vinculada"
-                            }
-                            className={cn(
-                              "inline-flex items-center justify-center rounded-full p-0.5",
-                              doc.has_blocking_issues ? "text-red-600" : "text-amber-600",
-                            )}
-                          >
-                            <AlertTriangle className="h-3.5 w-3.5" />
-                          </span>
-                        )}
+                        <DocWarnings doc={doc} />
                       </div>
                     </td>
                     <td className="px-3 py-3 text-muted-foreground">
@@ -295,6 +288,54 @@ export function Inbox() {
         </div>
       )}
     </div>
+  );
+}
+
+// =============================================================================
+// Warnings inline (badges) por documento
+// =============================================================================
+
+/** Estados en los que vale la pena mostrar el aviso "sin oferta" para un pedido. */
+const SHOW_LINK_WARNING_STATUSES = new Set<DocumentStatus>(["extracted", "approved"]);
+
+function DocWarnings({ doc }: { doc: DocumentListItem }) {
+  const showSinOferta =
+    doc.document_type === "pedido" &&
+    doc.has_offer_link === false &&
+    SHOW_LINK_WARNING_STATUSES.has(doc.status);
+
+  if (!doc.has_blocking_issues && !doc.has_discrepancies && !showSinOferta) return null;
+
+  return (
+    <>
+      {doc.has_blocking_issues && (
+        <span
+          title="Aprobación bloqueada por reglas o por precio bajo del mínimo del catálogo"
+          className="inline-flex items-center gap-1 rounded-full bg-red-100 text-red-900 border border-red-300 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide"
+        >
+          <ShieldX className="h-3 w-3" />
+          Bloqueado
+        </span>
+      )}
+      {showSinOferta && (
+        <span
+          title="No se ha encontrado oferta vinculada para este pedido. Sube la oferta o vincúlala manualmente."
+          className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-900 border border-amber-300 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide"
+        >
+          <Link2Off className="h-3 w-3" />
+          Sin oferta
+        </span>
+      )}
+      {doc.has_discrepancies && (
+        <span
+          title="El pedido tiene precios o cantidades distintos a la oferta vinculada"
+          className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-900 border border-amber-300 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide"
+        >
+          <AlertTriangle className="h-3 w-3" />
+          Discrepancias
+        </span>
+      )}
+    </>
   );
 }
 

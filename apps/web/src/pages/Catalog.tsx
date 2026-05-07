@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BookOpen, Plus, Upload, Trash2, RefreshCw, Search, Save, X } from "lucide-react";
+import { BookOpen, Plus, Upload, Trash2, RefreshCw, Search, Save, X, ShieldCheck } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { TenantBanner } from "@/components/TenantBanner";
-import { catalogApi, getTenantId } from "@/lib/api";
+import { api, catalogApi, getTenantId } from "@/lib/api";
 import type { CatalogItemRead, CatalogItemUpdate, CatalogUploadResult } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -16,6 +15,10 @@ export function Catalog() {
   const [uploadResult, setUploadResult] = useState<CatalogUploadResult | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [revalidating, setRevalidating] = useState(false);
+  const [revalidateResult, setRevalidateResult] = useState<
+    Awaited<ReturnType<typeof api.revalidate>> | null
+  >(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
@@ -54,6 +57,26 @@ export function Catalog() {
     }
   };
 
+  const handleRevalidate = async () => {
+    if (
+      !confirm(
+        "Re-validar todos los pedidos contra el catálogo y reglas actuales? Útil tras subir catálogo nuevo o cambiar reglas. Recalcula bloqueos sin volver a llamar a Claude.",
+      )
+    )
+      return;
+    setRevalidating(true);
+    setError(null);
+    setRevalidateResult(null);
+    try {
+      const r = await api.revalidate(false);
+      setRevalidateResult(r);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRevalidating(false);
+    }
+  };
+
   const handleDelete = async (id: string, ref: string) => {
     if (!confirm(`¿Eliminar "${ref}" del catálogo?`)) return;
     try {
@@ -66,8 +89,6 @@ export function Catalog() {
 
   return (
     <div className="space-y-5">
-      <TenantBanner onChanged={refresh} />
-
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
@@ -107,18 +128,45 @@ export function Catalog() {
       )}
 
       {uploadResult && (
-        <div className="rounded-md border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-900">
-          Importación: <strong>{uploadResult.created}</strong> nuevas,{" "}
-          <strong>{uploadResult.updated}</strong> actualizadas,{" "}
-          <strong>{uploadResult.skipped}</strong> ignoradas
-          {uploadResult.errors.length > 0 && (
-            <details className="mt-2">
-              <summary className="cursor-pointer text-xs">{uploadResult.errors.length} errores</summary>
-              <ul className="mt-1 text-xs font-mono space-y-0.5">
-                {uploadResult.errors.map((e, i) => <li key={i}>{e}</li>)}
-              </ul>
-            </details>
+        <div className="rounded-md border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-900 space-y-2">
+          <div>
+            Importación: <strong>{uploadResult.created}</strong> nuevas,{" "}
+            <strong>{uploadResult.updated}</strong> actualizadas,{" "}
+            <strong>{uploadResult.skipped}</strong> ignoradas
+            {uploadResult.errors.length > 0 && (
+              <details className="mt-2">
+                <summary className="cursor-pointer text-xs">{uploadResult.errors.length} errores</summary>
+                <ul className="mt-1 text-xs font-mono space-y-0.5">
+                  {uploadResult.errors.map((e, i) => <li key={i}>{e}</li>)}
+                </ul>
+              </details>
+            )}
+          </div>
+          <div className="pt-2 border-t border-emerald-200">
+            <Button size="sm" variant="outline" onClick={handleRevalidate} disabled={revalidating}>
+              <ShieldCheck className={cn("h-3.5 w-3.5 mr-1.5", revalidating && "animate-pulse")} />
+              {revalidating ? "Re-validando..." : "Re-validar pedidos antiguos contra este catálogo"}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {revalidateResult && (
+        <div className="rounded-md border border-sky-300 bg-sky-50 p-3 text-sm text-sky-900">
+          Re-validación: <strong>{revalidateResult.inspected}</strong> docs revisados,{" "}
+          <strong>{revalidateResult.updated}</strong> actualizados.{" "}
+          {revalidateResult.new_blocks > 0 && (
+            <span className="text-red-700">
+              {revalidateResult.new_blocks} nuevos bloqueos.{" "}
+            </span>
           )}
+          {revalidateResult.cleared_blocks > 0 && (
+            <span className="text-emerald-700">
+              {revalidateResult.cleared_blocks} bloqueos resueltos.{" "}
+            </span>
+          )}
+          ({revalidateResult.blocking_now} con bloqueo actualmente,{" "}
+          {revalidateResult.blocking_before} antes)
         </div>
       )}
 
