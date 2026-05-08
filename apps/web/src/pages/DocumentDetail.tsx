@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { PDFViewer, bgClassForPath, type Highlight } from "@/components/PDFViewer";
 import { AssignToConceptModal } from "@/components/AssignToConceptModal";
 import { AddCustomFieldModal } from "@/components/AddCustomFieldModal";
+import { CustomerRegistrationView } from "@/components/CustomerRegistrationView";
 import { api, ApiError } from "@/lib/api";
 import type {
   ComparisonResult,
@@ -430,8 +431,9 @@ export function DocumentDetail() {
         </div>
       )}
 
-      {/* Acciones (sticky bar arriba) */}
-      {canEdit && draft && (
+      {/* Acciones (sticky bar arriba) — sólo para pedidos/ofertas. Las fichas
+          de alta usan su propia CTA dentro de CustomerRegistrationView. */}
+      {canEdit && draft && doc.document_type !== "ficha_cliente" && (
         <div className="sticky top-0 z-20 -mx-8 px-8 py-2 bg-white/90 backdrop-blur border-b flex items-center gap-2">
           {dirty ? (
             <>
@@ -542,34 +544,42 @@ export function DocumentDetail() {
         />
 
         <div className="space-y-5">
-          {doc.document_type === "pedido" && doc.status === "extracted" && (
-            <OfferLinkPanel
-              link={link}
-              busy={linkBusy}
-              onAutoLink={handleAutoLink}
-              onUnlink={handleUnlink}
-            />
-          )}
-          {doc.document_type === "oferta" && linkedOrders.length > 0 && (
-            <LinkedOrdersPanel orders={linkedOrders} />
-          )}
-          {draft ? (
-            <ExtractionView
-              data={draft}
-              onChange={setDraft}
-              activeFieldPath={activeFieldPath}
-              onFieldFocus={setActiveFieldPath}
-              editable={canEdit}
-              onAssignConcept={(sourceText) => setConceptModal({ sourceText })}
-              originalData={doc.extracted_json ?? null}
-              customFieldsByGroup={customFieldsByGroup}
-            />
+          {doc.document_type === "ficha_cliente" ? (
+            // Vista específica de alta de cliente — formulario editable
+            // con CTA "Dar de alta en el ERP".
+            <CustomerRegistrationView doc={doc} onUpdated={setDoc} />
           ) : (
-            <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground">
-              {ACTIVE_STATUSES.has(doc.status)
-                ? "Procesando con OCR + IA... (auto-refresh activo)"
-                : "Sin datos extraídos."}
-            </div>
+            <>
+              {doc.document_type === "pedido" && doc.status === "extracted" && (
+                <OfferLinkPanel
+                  link={link}
+                  busy={linkBusy}
+                  onAutoLink={handleAutoLink}
+                  onUnlink={handleUnlink}
+                />
+              )}
+              {doc.document_type === "oferta" && linkedOrders.length > 0 && (
+                <LinkedOrdersPanel orders={linkedOrders} />
+              )}
+              {draft ? (
+                <ExtractionView
+                  data={draft}
+                  onChange={setDraft}
+                  activeFieldPath={activeFieldPath}
+                  onFieldFocus={setActiveFieldPath}
+                  editable={canEdit}
+                  onAssignConcept={(sourceText) => setConceptModal({ sourceText })}
+                  originalData={doc.extracted_json ?? null}
+                  customFieldsByGroup={customFieldsByGroup}
+                />
+              ) : (
+                <div className="rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground">
+                  {ACTIVE_STATUSES.has(doc.status)
+                    ? "Procesando con OCR + IA... (auto-refresh activo)"
+                    : "Sin datos extraídos."}
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>

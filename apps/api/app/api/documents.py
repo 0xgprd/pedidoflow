@@ -26,6 +26,9 @@ from app.models.workflow_rule import WorkflowRule
 from app.services.classification import classify_document
 from app.services.erp import (
     AuthError,
+    CanonicalAddress,
+    CanonicalContact,
+    CanonicalCustomerRegistration,
     CustomerNotRegisteredError,
     ERPAdapterError,
     TransientError,
@@ -980,5 +983,221 @@ def push_document_to_erp(
         document_id=str(document_id),
         adapter=adapter.name,
         erp_id=result.erp_id,
+    )
+    return doc
+
+
+# =============================================================================
+# Alta de cliente — endpoint independiente del push de pedido
+# =============================================================================
+
+
+class CustomerRegistrationPayload(BaseModel):
+    """Payload del endpoint /register-customer.
+
+    Replica los campos de `CanonicalCustomerRegistration` con la diferencia
+    de que `source_document_id` no se acepta del cliente — se toma del path.
+    """
+
+    company_name: str = Field(..., min_length=1)
+    fiscal_name: str | None = None
+    tax_id: str | None = None
+    eu_vat: str | None = None
+    supplier_number_in_customer_system: str | None = None
+
+    fiscal_address: dict[str, Any]  # se valida convirtiendo a CanonicalAddress
+    billing_address: dict[str, Any] | None = None
+    shipping_address: dict[str, Any] | None = None
+
+    main_phone: str | None = None
+    secondary_phone: str | None = None
+    fax: str | None = None
+    main_email: str | None = None
+
+    contacts: list[dict[str, Any]] = Field(default_factory=list)
+
+    tax_category: str = "unknown"
+    payment_terms: str | None = None
+    bank_account_iban: str | None = None
+    preferred_language: str | None = None
+
+    signed_by_name: str | None = None
+    signed_by_role: str | None = None
+    signature_date: str | None = None  # ISO YYYY-MM-DD
+
+
+def _to_canonical_registration(
+    document_id: UUID, payload: CustomerRegistrationPayload
+) -> CanonicalCustomerRegistration:
+    """Convierte el payload del endpoint al modelo canónico.
+
+    Lanza ValueError si la fiscal_address o algún sub-campo está mal formado.
+    """
+    from datetime import date as date_cls
+
+    def _addr(d: dict[str, Any] | None) -> CanonicalAddress | None:
+        if not d:
+            return None
+        return CanonicalAddress(**d)
+
+    fiscal = _addr(payload.fiscal_address)
+    if fiscal is None:
+        raise ValueError("fiscal_address is required")
+
+    contacts = [CanonicalContact(**c) for c in payload.contacts]
+
+    sig_date: date_cls | None = None
+    if payload.signature_date:
+        try:
+            sig_date = date_cls.fromisoformat(payload.signature_date)
+        except ValueError as e:
+            raise ValueError(f"signature_date must be YYYY-MM-DD: {e}") from e
+
+    # tax_category cae a unknown si no es uno de los Literal aceptados
+    valid_tax = {"domestic", "eu_intracom", "export", "unknown"}
+    tax_category = payload.tax_category if payload.tax_category in valid_tax else "unknown"
+
+    return CanonicalCustomerRegistration(
+        source_document_id=document_id,
+        company_name=payload.company_name,
+        fiscal_name=payload.fiscal_name,
+        tax_id=payload.tax_id,
+        eu_vat=payload.eu_vat,
+        supplier_number_in_customer_system=payload.supplier_number_in_customer_system,
+        fiscal_address=fiscal,
+        billing_address=_addr(payload.billing_address),
+        shipping_address=_addr(payload.shipping_address),
+        main_phone=payload.main_phone,
+        secondary_phone=payload.secondary_phone,
+        fax=payload.fax,
+        main_email=payload.main_email,
+        contacts=contacts,
+        tax_category=tax_category,  # type: ignore[arg-type]
+        payment_terms=payload.payment_terms,
+        bank_account_iban=payload.bank_account_iban,
+        preferred_language=payload.preferred_language,
+        signed_by_name=payload.signed_by_name,
+        signed_by_role=payload.signed_by_role,
+        signature_date=sig_date,
+    )
+
+
+@router.post("/{document_id}/register-customer", response_model=DocumentRead)
+def register_customer_from_document(
+    document_id: UUID,
+    payload: CustomerRegistrationPayload,
+    tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
+    session: Annotated[Session, Depends(get_session)],
+) -> Document:
+    """Da de alta un cliente en el ERP a partir de los datos revisados de
+    una ficha de alta.
+
+    El usuario:
+        1. Sube/recibe una ficha de alta (document_type=ficha_cliente).
+        2. La IA extrae los datos automáticamente.
+        3. Revisa y edita los campos en la UI de Order Flow.
+        4. Pulsa 'Dar de alta en el ERP' → este endpoint.
+
+    Tras éxito, el documento queda con status=APPROVED + erp_id apuntando
+    al Customer creado. El doc sigue siendo de tipo ficha_cliente (es la
+    prueba de que el cliente fue dado de alta con esa ficha firmada).
+    """
+    doc = session.get(Document, document_id)
+    if doc is None or doc.tenant_id != tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    if doc.document_type != DocumentType.FICHA_CLIENTE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Solo se pueden dar de alta clientes desde fichas de alta. "
+                f"Tipo actual: {doc.document_type}."
+            ),
+        )
+
+    if doc.erp_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Este cliente ya fue dado de alta en el ERP como '{doc.erp_id}'. "
+                "Si quieres modificar los datos, edita el cliente directamente en el ERP."
+            ),
+        )
+
+    adapter = get_erp_adapter()
+    if adapter is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "No hay ERP configurado en el servidor. Configura las variables "
+                "ERPNEXT_BASE_URL, ERPNEXT_API_KEY, ERPNEXT_API_SECRET y "
+                "ERPNEXT_DEFAULT_COMPANY en el .env."
+            ),
+        )
+
+    # 1. Convertir payload a modelo canónico
+    try:
+        canonical = _to_canonical_registration(document_id, payload)
+    except (ValueError, Exception) as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Datos del cliente inválidos: {e}",
+        ) from e
+
+    # 2. Llamar al adapter
+    try:
+        result = adapter.register_customer(canonical)
+    except AuthError as e:
+        log.error("erp.register_customer.auth_error", document_id=str(document_id), error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Credenciales del ERP rechazadas. Revisa la configuración.",
+        ) from e
+    except (ERPNotFoundError, ERPValidationError) as e:
+        doc.erp_push_error = f"{type(e).__name__}: {e}"
+        doc.updated_at = datetime.now(UTC)
+        session.add(doc)
+        session.commit()
+        log.warning(
+            "erp.register_customer.validation_error",
+            document_id=str(document_id),
+            error=str(e),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"El ERP rechazó el alta: {e}",
+        ) from e
+    except TransientError as e:
+        log.warning("erp.register_customer.transient", document_id=str(document_id), error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"ERP temporalmente no disponible: {e}.",
+        ) from e
+    except ERPAdapterError as e:
+        log.exception("erp.register_customer.adapter_error", document_id=str(document_id))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Error al hablar con el ERP: {e}",
+        ) from e
+
+    # 3. Persistir resultado en el doc — ahora doc.erp_id apunta al Customer
+    doc.erp_adapter = adapter.name
+    doc.erp_id = result.erp_customer_id
+    doc.erp_url = result.erp_customer_url
+    doc.erp_pushed_at = datetime.now(UTC)
+    doc.erp_push_error = None
+    doc.status = DocumentStatus.APPROVED
+    doc.updated_at = doc.erp_pushed_at
+    session.add(doc)
+    session.commit()
+    session.refresh(doc)
+
+    log.info(
+        "erp.register_customer.ok",
+        document_id=str(document_id),
+        adapter=adapter.name,
+        erp_customer_id=result.erp_customer_id,
+        addresses_created=result.addresses_created,
+        contacts_created=result.contacts_created,
     )
     return doc

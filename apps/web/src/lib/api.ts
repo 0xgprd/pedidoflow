@@ -238,6 +238,58 @@ export interface DocumentRead {
   processed_at: string | null;
 }
 
+// =============================================================================
+// Alta de cliente — extracted_json de fichas tiene esta estructura
+// =============================================================================
+
+export interface CustomerAddress {
+  line1: string;
+  line2?: string | null;
+  city: string;
+  postal_code: string;
+  state_or_region?: string | null;
+  country: string;
+}
+
+export interface CustomerContactPerson {
+  name: string;
+  role?: string | null;
+  phone?: string | null;
+  email?: string | null;
+}
+
+export type CustomerTaxCategory = "domestic" | "eu_intracom" | "export" | "unknown";
+
+/** Estructura del extracted_json cuando document_type=ficha_cliente.
+ *  También usado como payload para POST /register-customer. */
+export interface CustomerRegistrationPayload {
+  company_name: string;
+  fiscal_name?: string | null;
+  tax_id?: string | null;
+  eu_vat?: string | null;
+  supplier_number_in_customer_system?: string | null;
+
+  fiscal_address: CustomerAddress;
+  billing_address?: CustomerAddress | null;
+  shipping_address?: CustomerAddress | null;
+
+  main_phone?: string | null;
+  secondary_phone?: string | null;
+  fax?: string | null;
+  main_email?: string | null;
+
+  contacts: CustomerContactPerson[];
+
+  tax_category: CustomerTaxCategory;
+  payment_terms?: string | null;
+  bank_account_iban?: string | null;
+  preferred_language?: string | null;
+
+  signed_by_name?: string | null;
+  signed_by_role?: string | null;
+  signature_date?: string | null;
+}
+
 /** Item ligero de la lista — sin extracted_json (10-50× menos payload). */
 export interface DocumentListItem {
   id: string;
@@ -354,6 +406,11 @@ export const api = {
     request<DocumentRead>(`/api/v1/documents/${id}/push-to-erp`, {
       method: "POST",
       body: "{}",
+    }),
+  registerCustomer: (id: string, payload: CustomerRegistrationPayload) =>
+    request<DocumentRead>(`/api/v1/documents/${id}/register-customer`, {
+      method: "POST",
+      body: JSON.stringify(payload),
     }),
   reclassify: (onlyUnknown = true) =>
     request<{
