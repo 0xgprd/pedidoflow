@@ -11,8 +11,10 @@ import pytest
 
 from app.services.erp import (
     CanonicalCustomer,
+    CanonicalCustomerRegistration,
     CanonicalLine,
     CanonicalSalesOrder,
+    CustomerRegistrationResult,
     ERPAdapter,
     PushResult,
     extracted_to_sales_order,
@@ -235,6 +237,11 @@ class _FakeAdapter:
 
     def push_invoice(self, invoice: CanonicalInvoice) -> PushResult:
         return PushResult(erp_id="INV-FAKE-1")
+
+    def register_customer(
+        self, registration: CanonicalCustomerRegistration
+    ) -> CustomerRegistrationResult:
+        return CustomerRegistrationResult(erp_customer_id="FAKE-CUST-1")
 
 
 def test_fake_adapter_satisfies_protocol() -> None:

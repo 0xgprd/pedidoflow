@@ -499,6 +499,175 @@ def test_push_delivery_note_not_implemented() -> None:
         adapter.push_delivery_note(note)
 
 
+def test_register_customer_creates_customer_addresses_contacts() -> None:
+    """Caso completo: alta con ficha Quimilock realista. Crea Customer con
+    custom fields (supplier number + signature audit), 2 addresses (fiscal +
+    facturación distinta no, sólo fiscal porque iguales) y 2 contactos."""
+    from datetime import date
+
+    from app.services.erp.canonical import (
+        CanonicalAddress,
+        CanonicalContact,
+        CanonicalCustomerRegistration,
+    )
+
+    posts: list[tuple[str, dict[str, Any]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        method = request.method
+
+        # Custom fields (4: supplier_number + 3 de signature) → ya existen
+        if method == "GET" and path == "/api/resource/Custom Field":
+            return httpx.Response(200, json={"data": [{"name": "ok"}]})
+
+        # Customer create
+        if method == "POST" and path == "/api/resource/Customer":
+            posts.append((path, json.loads(request.content)))
+            return httpx.Response(200, json={"data": {"name": "ATS"}})
+
+        # Address create (fiscal)
+        if method == "POST" and path == "/api/resource/Address":
+            posts.append((path, json.loads(request.content)))
+            return httpx.Response(200, json={"data": {"name": "ATS - Permanent"}})
+
+        # Contact create
+        if method == "POST" and path == "/api/resource/Contact":
+            posts.append((path, json.loads(request.content)))
+            return httpx.Response(200, json={"data": {"name": "Contact-1"}})
+
+        return httpx.Response(404)
+
+    registration = CanonicalCustomerRegistration(
+        source_document_id=uuid4(),
+        company_name="ATS",
+        eu_vat="FR76344020383",
+        supplier_number_in_customer_system="QML-001",
+        fiscal_address=CanonicalAddress(
+            line1="Z.I. Des Agriers",
+            city="Angouleme",
+            postal_code="16000",
+            country="France",
+        ),
+        # billing_address == fiscal_address → no se duplica
+        billing_address=CanonicalAddress(
+            line1="Z.I. Des Agriers",
+            city="Angouleme",
+            postal_code="16000",
+            country="France",
+        ),
+        main_phone="+33 545913737",
+        main_email="accueil@angouleme-ts.fr",
+        contacts=[
+            CanonicalContact(
+                name="Cédric Chabanne", role="Acheteur", email="cchabanne@angouleme-ts.fr"
+            ),
+            CanonicalContact(name="Delphine Andreo", role="Comptable"),
+        ],
+        tax_category="eu_intracom",
+        payment_terms="Virement bancaire 30 jours",
+        preferred_language="fr",
+        signed_by_name="Cédric Chabanne",
+        signed_by_role="Directeur",
+        signature_date=date(2026, 4, 15),
+    )
+
+    adapter = _make_adapter(handler)
+    result = adapter.register_customer(registration)
+
+    assert result.erp_customer_id == "ATS"
+    assert "/app/customer/ATS" in (result.erp_customer_url or "")
+    # 1 address fiscal — billing igual no se duplica, no shipping
+    assert result.addresses_created == 1
+    # 2 contactos
+    assert result.contacts_created == 2
+
+    customer_post = next(p for p in posts if p[0] == "/api/resource/Customer")[1]
+    assert customer_post["customer_name"] == "ATS"
+    assert customer_post["tax_id"] == "FR76344020383"
+    assert customer_post["tax_category"] == "EU Intracom"
+    assert customer_post["customer_type"] == "Company"
+    assert customer_post["language"] == "fr"
+    assert customer_post["orderflow_supplier_number_in_their_system"] == "QML-001"
+    assert customer_post["orderflow_registration_signed_by_name"] == "Cédric Chabanne"
+    assert customer_post["orderflow_registration_signature_date"] == "2026-04-15"
+
+    address_post = next(p for p in posts if p[0] == "/api/resource/Address")[1]
+    assert address_post["address_line1"] == "Z.I. Des Agriers"
+    assert address_post["pincode"] == "16000"
+    assert address_post["country"] == "France"
+    assert address_post["links"] == [{"link_doctype": "Customer", "link_name": "ATS"}]
+
+    contact_posts = [p for p in posts if p[0] == "/api/resource/Contact"]
+    assert len(contact_posts) == 2
+    contact_first_names = {p[1]["first_name"] for p in contact_posts}
+    assert "Cédric" in contact_first_names
+    assert "Delphine" in contact_first_names
+
+
+def test_register_customer_with_distinct_billing_creates_two_addresses() -> None:
+    """Si billing_address es distinta de fiscal_address, crea 2 addresses."""
+    from app.services.erp.canonical import (
+        CanonicalAddress,
+        CanonicalCustomerRegistration,
+    )
+
+    addr_count = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        method = request.method
+        if method == "GET" and path == "/api/resource/Custom Field":
+            return httpx.Response(200, json={"data": [{"name": "ok"}]})
+        if method == "POST" and path == "/api/resource/Customer":
+            return httpx.Response(200, json={"data": {"name": "ACME"}})
+        if method == "POST" and path == "/api/resource/Address":
+            addr_count[0] += 1
+            return httpx.Response(200, json={"data": {"name": f"addr-{addr_count[0]}"}})
+        return httpx.Response(404)
+
+    reg = CanonicalCustomerRegistration(
+        source_document_id=uuid4(),
+        company_name="ACME",
+        fiscal_address=CanonicalAddress(line1="Av. A", city="X", postal_code="11111", country="ES"),
+        billing_address=CanonicalAddress(
+            line1="Av. B", city="Y", postal_code="22222", country="ES"
+        ),
+    )
+    result = _make_adapter(handler).register_customer(reg)
+    assert result.addresses_created == 2
+
+
+def test_register_customer_skips_unknown_tax_category() -> None:
+    """Si tax_category=unknown, no se setea en el body (deja al implementador)."""
+    from app.services.erp.canonical import (
+        CanonicalAddress,
+        CanonicalCustomerRegistration,
+    )
+
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "GET" and path == "/api/resource/Custom Field":
+            return httpx.Response(200, json={"data": [{"name": "ok"}]})
+        if request.method == "POST" and path == "/api/resource/Customer":
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={"data": {"name": "X"}})
+        if request.method == "POST" and path == "/api/resource/Address":
+            return httpx.Response(200, json={"data": {"name": "addr"}})
+        return httpx.Response(404)
+
+    reg = CanonicalCustomerRegistration(
+        source_document_id=uuid4(),
+        company_name="X",
+        fiscal_address=CanonicalAddress(line1="x", city="y", postal_code="1", country="ES"),
+        tax_category="unknown",
+    )
+    _make_adapter(handler).register_customer(reg)
+    assert "tax_category" not in captured
+
+
 def test_normalize_company_name_strips_common_suffixes() -> None:
     from app.services.erp.erpnext import _normalize_company_name
 

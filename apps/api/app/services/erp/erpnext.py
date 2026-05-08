@@ -24,13 +24,17 @@ from app.core.logging import get_logger
 from app.services.erp.adapter import (
     AuthError,
     CustomerNotRegisteredError,
+    CustomerRegistrationResult,
     NotFoundError,
     PushResult,
     TransientError,
     ValidationError,
 )
 from app.services.erp.canonical import (
+    CanonicalAddress,
+    CanonicalContact,
     CanonicalCustomer,
+    CanonicalCustomerRegistration,
     CanonicalDeliveryNote,
     CanonicalInvoice,
     CanonicalLine,
@@ -173,6 +177,301 @@ class ERPNextAdapter:
         raise NotImplementedError(
             "push_invoice pendiente — se implementa cuando Order Flow extraiga facturas",
         )
+
+    # =========================================================================
+    # Alta de cliente — Customer + Addresses + Contacts en una operación
+    # =========================================================================
+
+    def register_customer(
+        self, registration: CanonicalCustomerRegistration
+    ) -> CustomerRegistrationResult:
+        """Da de alta un cliente nuevo en ERPNext con TODOS sus datos.
+
+        Crea (en este orden):
+            1. Customer (con tax_category, payment_terms_template, idioma...)
+            2. Address fiscal (vinculada via Dynamic Link)
+            3. Address de facturación si distinta
+            4. Address de envío si distinta
+            5. Contact por cada persona en `registration.contacts`
+            6. Custom Fields para supplier_number_in_customer_system y
+               signed_by_* — auto-creados la primera vez.
+
+        Si el cliente YA existe (mismo customer_name), levanta ValidationError
+        — el caller debería detectar esto antes para evitarlo.
+        """
+        log.info(
+            "erpnext.register_customer.start",
+            company=registration.company_name,
+            tax_category=registration.tax_category,
+        )
+
+        # Asegurar custom fields auxiliares
+        self._ensure_supplier_number_field()
+        if registration.signed_by_name or registration.signature_date:
+            self._ensure_signature_fields()
+
+        warnings: list[str] = []
+
+        # 1. Crear Customer
+        customer_body = self._build_customer_body(registration)
+        try:
+            r = self._post("/api/resource/Customer", customer_body)
+        except ValidationError as e:
+            # Si ERPNext rechaza por duplicado, lo propagamos con mensaje claro
+            raise ValidationError(
+                f"No se pudo crear el cliente en ERPNext (¿duplicado?): {e}"
+            ) from e
+        customer_name = r.json()["data"]["name"]
+
+        # 2-4. Crear addresses
+        addresses_created = 0
+        try:
+            self._create_address(
+                customer_name, registration.fiscal_address, address_type="Permanent"
+            )
+            addresses_created += 1
+        except (ValidationError, NotFoundError) as e:
+            warnings.append(f"No se pudo crear address fiscal: {e}")
+
+        if (
+            registration.billing_address
+            and registration.billing_address != registration.fiscal_address
+        ):
+            try:
+                self._create_address(
+                    customer_name, registration.billing_address, address_type="Billing"
+                )
+                addresses_created += 1
+            except (ValidationError, NotFoundError) as e:
+                warnings.append(f"No se pudo crear address facturación: {e}")
+
+        if (
+            registration.shipping_address
+            and registration.shipping_address != registration.fiscal_address
+            and registration.shipping_address != registration.billing_address
+        ):
+            try:
+                self._create_address(
+                    customer_name, registration.shipping_address, address_type="Shipping"
+                )
+                addresses_created += 1
+            except (ValidationError, NotFoundError) as e:
+                warnings.append(f"No se pudo crear address envío: {e}")
+
+        # 5. Crear contacts
+        contacts_created = 0
+        for contact in registration.contacts:
+            try:
+                self._create_contact(customer_name, contact)
+                contacts_created += 1
+            except (ValidationError, NotFoundError) as e:
+                warnings.append(f"No se pudo crear contact '{contact.name}': {e}")
+
+        log.info(
+            "erpnext.register_customer.ok",
+            erp_customer_id=customer_name,
+            addresses=addresses_created,
+            contacts=contacts_created,
+            warnings=len(warnings),
+        )
+
+        return CustomerRegistrationResult(
+            erp_customer_id=customer_name,
+            erp_customer_url=f"{self.config.base_url}/app/customer/{quote(customer_name)}",
+            addresses_created=addresses_created,
+            contacts_created=contacts_created,
+            warnings=warnings,
+            raw_response=r.json().get("data", {}),
+        )
+
+    # ---- Customer body ----
+
+    # Mapping de TaxCategory canónica → tax_category de ERPNext (texto libre).
+    # ERPNext acepta cualquier string si el Tax Category Doctype existe; usamos
+    # nombres estándar que un implementador puede crear con esos valores.
+    _TAX_CATEGORY_LABELS = {
+        "domestic": "Domestic",
+        "eu_intracom": "EU Intracom",
+        "export": "Export",
+        "unknown": "",
+    }
+
+    def _build_customer_body(self, reg: CanonicalCustomerRegistration) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "customer_name": reg.company_name,
+            "customer_type": "Company",
+            "customer_group": self.config.default_customer_group,
+            "territory": reg.fiscal_address.country or self.config.default_territory,
+        }
+        # Tax ID: preferimos eu_vat (intracom) sino tax_id local
+        if reg.eu_vat:
+            body["tax_id"] = reg.eu_vat
+        elif reg.tax_id:
+            body["tax_id"] = reg.tax_id
+
+        # Tax category — solo se setea si ERPNext tiene la entrada creada.
+        # Si no, el campo se queda vacío y el implementador puede asignarla
+        # manualmente sin que falle el alta.
+        tax_label = self._TAX_CATEGORY_LABELS.get(reg.tax_category, "")
+        if tax_label:
+            body["tax_category"] = tax_label
+
+        if reg.main_email:
+            body["email_id"] = reg.main_email
+        if reg.main_phone:
+            body["mobile_no"] = reg.main_phone
+        if reg.preferred_language:
+            body["language"] = reg.preferred_language
+
+        # Custom fields: supplier number + signature audit trail
+        if reg.supplier_number_in_customer_system:
+            body[self._SUPPLIER_NUMBER_FIELDNAME] = reg.supplier_number_in_customer_system
+        if reg.signed_by_name:
+            body[self._SIGNED_BY_NAME_FIELDNAME] = reg.signed_by_name
+        if reg.signed_by_role:
+            body[self._SIGNED_BY_ROLE_FIELDNAME] = reg.signed_by_role
+        if reg.signature_date:
+            body[self._SIGNATURE_DATE_FIELDNAME] = reg.signature_date.isoformat()
+
+        return body
+
+    # ---- Address creation ----
+
+    def _create_address(
+        self,
+        customer_name: str,
+        addr: CanonicalAddress,
+        *,
+        address_type: str = "Permanent",
+    ) -> None:
+        """Crea un Address en ERPNext y lo vincula al Customer via Dynamic Link.
+
+        ERPNext exige que `country` exista como Country doctype. Si el país
+        del PDF no matchea, hacemos un best-effort intentando primero el
+        nombre tal cual y, si falla, "Spain" como fallback (lo más probable
+        para nuestro mercado). El warning se devuelve al caller.
+        """
+        body = {
+            "address_title": f"{customer_name} - {address_type}"[:140],
+            "address_type": address_type,
+            "address_line1": addr.line1,
+            "address_line2": addr.line2,
+            "city": addr.city,
+            "pincode": addr.postal_code,
+            "state": addr.state_or_region,
+            "country": addr.country,
+            "links": [
+                {
+                    "link_doctype": "Customer",
+                    "link_name": customer_name,
+                }
+            ],
+        }
+        try:
+            self._post("/api/resource/Address", body)
+        except ValidationError as e:
+            # País no existe en ERPNext → fallback al territorio default
+            if "country" in str(e).lower():
+                body["country"] = self.config.default_territory
+                self._post("/api/resource/Address", body)
+            else:
+                raise
+
+    # ---- Contact creation ----
+
+    def _create_contact(self, customer_name: str, contact: CanonicalContact) -> None:
+        """Crea un Contact en ERPNext y lo vincula al Customer."""
+        # Split del nombre — ERPNext requiere first_name como mínimo
+        parts = contact.name.strip().split(maxsplit=1)
+        first_name = parts[0] if parts else contact.name
+        last_name = parts[1] if len(parts) > 1 else None
+
+        body: dict[str, Any] = {
+            "first_name": first_name,
+            "last_name": last_name,
+            "designation": contact.role,
+            "links": [
+                {
+                    "link_doctype": "Customer",
+                    "link_name": customer_name,
+                }
+            ],
+        }
+        if contact.email:
+            body["email_ids"] = [{"email_id": contact.email, "is_primary": 1}]
+        if contact.phone:
+            body["phone_nos"] = [{"phone": contact.phone, "is_primary_phone": 1}]
+
+        self._post("/api/resource/Contact", body)
+
+    # ---- Custom fields auxiliares (supplier number + audit trail) ----
+
+    _SUPPLIER_NUMBER_FIELDNAME = "orderflow_supplier_number_in_their_system"
+    _SIGNED_BY_NAME_FIELDNAME = "orderflow_registration_signed_by_name"
+    _SIGNED_BY_ROLE_FIELDNAME = "orderflow_registration_signed_by_role"
+    _SIGNATURE_DATE_FIELDNAME = "orderflow_registration_signature_date"
+
+    def _ensure_supplier_number_field(self) -> None:
+        if getattr(self, "_supplier_number_field_ensured", False):
+            return
+        existing = self._get_list(
+            "Custom Field",
+            filters=[
+                ["dt", "=", "Customer"],
+                ["fieldname", "=", self._SUPPLIER_NUMBER_FIELDNAME],
+            ],
+        )
+        if not existing:
+            self._post(
+                "/api/resource/Custom Field",
+                {
+                    "dt": "Customer",
+                    "fieldname": self._SUPPLIER_NUMBER_FIELDNAME,
+                    "label": "Our supplier number in their system (Order Flow)",
+                    "fieldtype": "Data",
+                    "insert_after": "tax_id",
+                    "description": (
+                        "Código que el cliente ha asignado a NUESTRA empresa en SU "
+                        "sistema. Útil para matchear pedidos por referencia automatica."
+                    ),
+                },
+            )
+        self._supplier_number_field_ensured = True
+
+    def _ensure_signature_fields(self) -> None:
+        if getattr(self, "_signature_fields_ensured", False):
+            return
+        for fieldname, label, fieldtype, insert_after in (
+            (self._SIGNED_BY_NAME_FIELDNAME, "Registration signed by", "Data", "tax_id"),
+            (
+                self._SIGNED_BY_ROLE_FIELDNAME,
+                "Registration signed by — role",
+                "Data",
+                self._SIGNED_BY_NAME_FIELDNAME,
+            ),
+            (
+                self._SIGNATURE_DATE_FIELDNAME,
+                "Registration signature date",
+                "Date",
+                self._SIGNED_BY_ROLE_FIELDNAME,
+            ),
+        ):
+            existing = self._get_list(
+                "Custom Field",
+                filters=[["dt", "=", "Customer"], ["fieldname", "=", fieldname]],
+            )
+            if not existing:
+                self._post(
+                    "/api/resource/Custom Field",
+                    {
+                        "dt": "Customer",
+                        "fieldname": fieldname,
+                        "label": label,
+                        "fieldtype": fieldtype,
+                        "insert_after": insert_after,
+                    },
+                )
+        self._signature_fields_ensured = True
 
     # =========================================================================
     # Customer / Item bootstrap

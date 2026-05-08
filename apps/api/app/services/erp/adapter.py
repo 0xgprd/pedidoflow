@@ -15,6 +15,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from pydantic import BaseModel, Field
 
 from app.services.erp.canonical import (
+    CanonicalCustomerRegistration,
     CanonicalDeliveryNote,
     CanonicalInvoice,
     CanonicalSalesOrder,
@@ -31,6 +32,17 @@ class PushResult(BaseModel):
     raw_response: dict[str, Any] = Field(
         default_factory=dict, description="Respuesta cruda del ERP (debug)"
     )
+
+
+class CustomerRegistrationResult(BaseModel):
+    """Resultado de dar de alta un cliente en el ERP."""
+
+    erp_customer_id: str = Field(..., description="Nombre/ID del Customer creado")
+    erp_customer_url: str | None = None
+    addresses_created: int = 0
+    contacts_created: int = 0
+    warnings: list[str] = Field(default_factory=list)
+    raw_response: dict[str, Any] = Field(default_factory=dict)
 
 
 # =============================================================================
@@ -107,4 +119,12 @@ class ERPAdapter(Protocol):
 
     def push_invoice(self, invoice: CanonicalInvoice) -> PushResult:
         """Crea una Sales o Purchase Invoice en el ERP."""
+        ...
+
+    def register_customer(
+        self, registration: CanonicalCustomerRegistration
+    ) -> CustomerRegistrationResult:
+        """Da de alta un cliente en el ERP a partir de los datos extraídos
+        de una ficha de alta. Crea Customer + Addresses + Contacts en una
+        sola operación."""
         ...
