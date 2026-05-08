@@ -1514,8 +1514,10 @@ function DocumentTypeSelector({
       </button>
       {open && (
         <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute top-full left-0 mt-1 z-20 rounded border bg-white shadow-lg py-1 min-w-32">
+          {/* Backdrop sobre TODO incluido el sticky bar (que va a z-20) */}
+          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+          {/* Menú por encima del backdrop y del sticky bar */}
+          <div className="absolute top-full left-0 mt-1 z-40 rounded border bg-white shadow-lg py-1 min-w-32">
             {TYPES.map((t) => (
               <button
                 key={t.key}

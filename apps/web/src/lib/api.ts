@@ -407,6 +407,11 @@ export const api = {
       method: "POST",
       body: "{}",
     }),
+  reprocess: (id: string) =>
+    request<DocumentRead>(`/api/v1/documents/${id}/reprocess`, {
+      method: "POST",
+      body: "{}",
+    }),
   registerCustomer: (id: string, payload: CustomerRegistrationPayload) =>
     request<DocumentRead>(`/api/v1/documents/${id}/register-customer`, {
       method: "POST",

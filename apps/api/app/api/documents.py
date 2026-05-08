@@ -245,6 +245,65 @@ async def upload_document(
     return doc
 
 
+@router.post("/{document_id}/reprocess", response_model=DocumentRead)
+def reprocess_document(
+    document_id: UUID,
+    tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
+    session: Annotated[Session, Depends(get_session)],
+) -> Document:
+    """Re-encola la extracción IA sobre un documento ya procesado.
+
+    Útil cuando se mejora el prompt o el clasificador y se quiere aplicar a
+    docs antiguos sin tener que volver a subir el PDF. Resetea el doc a
+    `pending` y dispara `extract_document` que vuelve a clasificar y extraer.
+
+    Conserva el PDF original en storage. Borra `extracted_json` y campos
+    derivados del proceso anterior.
+    """
+    doc = session.get(Document, document_id)
+    if doc is None or doc.tenant_id != tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    # Solo permitimos re-procesar docs que NO están ya empujados al ERP — re-procesar
+    # uno empujado podría romper la trazabilidad. El usuario tiene que desvincular
+    # del ERP primero (cancelar el SO/Customer) si quiere re-procesar.
+    if doc.erp_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"No se puede re-procesar: el documento ya está cargado al ERP "
+                f"como '{doc.erp_id}'. Cancela en el ERP primero si quieres rehacerlo."
+            ),
+        )
+
+    doc.status = DocumentStatus.PENDING
+    doc.extracted_json = None
+    doc.raw_text = None
+    doc.ocr_result = None
+    doc.extraction_error = None
+    doc.has_blocking_issues = False
+    doc.has_discrepancies = False
+    doc.processed_at = None
+    doc.updated_at = datetime.now(UTC)
+    session.add(doc)
+    session.commit()
+    session.refresh(doc)
+
+    try:
+        from app.workers.tasks import extract_document
+
+        extract_document.delay(str(doc.id))
+        log.info("document.reprocess.enqueued", document_id=str(doc.id))
+    except Exception as e:
+        log.warning(
+            "document.reprocess.enqueue_failed",
+            document_id=str(doc.id),
+            error=str(e),
+        )
+
+    return doc
+
+
 # =============================================================================
 # Edición / aprobación
 # =============================================================================
