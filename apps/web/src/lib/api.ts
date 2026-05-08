@@ -781,6 +781,27 @@ export interface DashboardStats {
   }[];
 }
 
+// =============================================================================
+// VIES — verificación de VAT intracomunitarios (Comisión Europea)
+// =============================================================================
+
+export interface ViesVerifyResponse {
+  /** true=válido, false=no válido, null=VIES no respondió (desconocido). */
+  valid: boolean | null;
+  country_code: string;
+  vat_number: string;
+  name: string | null;
+  address: string | null;
+  error: string | null;
+}
+
+export const viesApi = {
+  verify: (vat: string) =>
+    request<ViesVerifyResponse>(
+      `/api/v1/vies/verify?vat=${encodeURIComponent(vat)}`,
+    ),
+};
+
 export const dashboardApi = {
   stats: () => request<DashboardStats>("/api/v1/dashboard/stats"),
 };

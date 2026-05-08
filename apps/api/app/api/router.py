@@ -12,6 +12,7 @@ from app.api import (
     integrations,
     tenant_fields,
     tenants,
+    vies,
     workflow_rules,
 )
 
@@ -26,3 +27,4 @@ api_router.include_router(integrations.router)
 api_router.include_router(catalog_items.router)
 api_router.include_router(workflow_rules.router)
 api_router.include_router(dashboard.router)
+api_router.include_router(vies.router)

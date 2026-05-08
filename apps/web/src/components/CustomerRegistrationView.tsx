@@ -21,13 +21,14 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { api, ApiError } from "@/lib/api";
+import { api, ApiError, viesApi } from "@/lib/api";
 import type {
   CustomerAddress,
   CustomerContactPerson,
   CustomerRegistrationPayload,
   CustomerTaxCategory,
   DocumentRead,
+  ViesVerifyResponse,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -218,11 +219,9 @@ export function CustomerRegistrationView({ doc, onUpdated }: Props) {
             disabled={alreadyRegistered}
             wide
           />
-          <Field
-            label="VAT intracomunitario"
+          <ViesField
             value={draft.eu_vat}
             onChange={(v) => setDraft({ ...draft, eu_vat: v })}
-            placeholder="FRxxxxxxxxxxx"
             disabled={alreadyRegistered}
           />
           <Field
@@ -601,6 +600,91 @@ function AddressFields({
         placeholder="España, France, Deutschland..."
       />
     </FieldGrid>
+  );
+}
+
+// =============================================================================
+// Campo VAT con verificación VIES en vivo
+// =============================================================================
+
+function ViesField({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string | null | undefined;
+  onChange: (v: string | null) => void;
+  disabled?: boolean;
+}) {
+  const [vies, setVies] = useState<ViesVerifyResponse | null>(null);
+  const [checking, setChecking] = useState(false);
+
+  // Debounce: esperar 600ms tras el último cambio antes de llamar VIES
+  useEffect(() => {
+    if (!value || value.trim().length < 4) {
+      setVies(null);
+      return;
+    }
+    const handle = setTimeout(async () => {
+      setChecking(true);
+      try {
+        const result = await viesApi.verify(value);
+        setVies(result);
+      } catch {
+        setVies(null);
+      } finally {
+        setChecking(false);
+      }
+    }, 600);
+    return () => clearTimeout(handle);
+  }, [value]);
+
+  const helpEl = (() => {
+    if (checking) return <span className="text-zinc-500">Comprobando en VIES…</span>;
+    if (!vies) return null;
+    if (vies.valid === true) {
+      return (
+        <span className="text-emerald-700 font-medium">
+          ✓ Validado en VIES{vies.name ? ` — ${vies.name}` : ""}
+        </span>
+      );
+    }
+    if (vies.valid === false) {
+      return (
+        <span className="text-red-700 font-medium">
+          ✕ No válido en VIES{vies.error ? ` — ${vies.error}` : ""}
+        </span>
+      );
+    }
+    // null = desconocido
+    return (
+      <span className="text-amber-700">
+        ⚠ VIES no respondió{vies.error ? ` — ${vies.error}` : ""}. Reintenta más tarde.
+      </span>
+    );
+  })();
+
+  return (
+    <div className="space-y-1">
+      <label className="text-xs text-muted-foreground uppercase tracking-wide">
+        VAT intracomunitario
+      </label>
+      <input
+        type="text"
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value === "" ? null : e.target.value)}
+        disabled={disabled}
+        placeholder="FRxxxxxxxxxxx"
+        className="w-full text-sm border rounded px-2 py-1 bg-white disabled:bg-zinc-50 disabled:text-zinc-600"
+      />
+      {helpEl ? (
+        <p className="text-xs italic">{helpEl}</p>
+      ) : (
+        <p className="text-xs text-muted-foreground italic">
+          La validez se comprueba contra la base oficial de la Comisión Europea (VIES).
+        </p>
+      )}
+    </div>
   );
 }
 

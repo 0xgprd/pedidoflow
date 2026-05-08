@@ -45,6 +45,7 @@ from app.services.matching import compare_order_vs_offer, find_matching_offer
 from app.services.rules_engine import evaluate_rules
 from app.services.storage import get_storage_service
 from app.services.validation import validate_against_catalog
+from app.services.vies import verify_eu_vat
 
 log = get_logger(__name__)
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -1143,6 +1144,30 @@ def register_customer_from_document(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Datos del cliente inválidos: {e}",
         ) from e
+
+    # 1b. Verificación VIES si el VAT es UE — bloqueante si VIES dice inválido,
+    # warning si VIES no responde (no queremos bloquear por una caída del
+    # servicio público).
+    if canonical.eu_vat:
+        vies = verify_eu_vat(canonical.eu_vat)
+        if vies.valid is False:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "vat_invalid_in_vies",
+                    "message": (
+                        f"El VAT '{canonical.eu_vat}' NO está validado en VIES "
+                        "(Comisión Europea). Si lo das de alta así, no podrás "
+                        "facturar IVA 0% por inversión sujeto pasivo. Verifica "
+                        "el número con el cliente o cambia su categoría fiscal."
+                    ),
+                    "vat": canonical.eu_vat,
+                    "vies_error": vies.error,
+                },
+            )
+        # vies.valid puede ser None (VIES no respondió) — continuamos pero
+        # registramos un warning en logs. La UI puede chequear erp_push_error
+        # tras éxito si hace falta.
 
     # 2. Llamar al adapter
     try:
