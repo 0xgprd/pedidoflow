@@ -282,6 +282,33 @@ export function DocumentDetail() {
     }
   };
 
+  const handleReopen = async () => {
+    if (!id || !doc) return;
+    if (doc.erp_id) {
+      alert(
+        `Este pedido ya se empujó al ERP como ${doc.erp_id}. ` +
+          "No se puede volver a pendiente sin antes cancelar el documento en el ERP.",
+      );
+      return;
+    }
+    if (
+      !confirm(
+        "¿Volver este pedido a pendiente de revisión? Esto deshace la aprobación y permite editarlo de nuevo.",
+      )
+    ) {
+      return;
+    }
+    setSaving(true);
+    try {
+      const updated = await api.patchStatus(id, "extracted");
+      setDoc(updated);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   // Si el último intento de push falló por cliente no dado de alta, guardamos
   // los datos del cliente para mostrar el panel "Dar de alta cliente".
   const [customerNotRegistered, setCustomerNotRegistered] = useState<{
@@ -453,25 +480,38 @@ export function DocumentDetail() {
           {doc.document_type === "pedido" && (
             <div className="ml-auto flex gap-2">
               {doc.status === "approved" ? (
-                /* Pedido ya aprobado — la acción ahora es empujar al ERP. */
-                <Button
-                  size="sm"
-                  className="bg-violet-600 hover:bg-violet-700 text-white"
-                  onClick={handlePushToErp}
-                  disabled={saving}
-                  title={
-                    doc.erp_id
-                      ? `Ya empujado como ${doc.erp_id}. Re-pushear creará un duplicado.`
-                      : "Crear pedido en el ERP"
-                  }
-                >
-                  <Send className="h-4 w-4 mr-1" />
-                  {saving
-                    ? "Empujando..."
-                    : doc.erp_id
-                      ? "Re-empujar al ERP"
-                      : "Empujar al ERP"}
-                </Button>
+                /* Pedido ya aprobado — empujar al ERP, o volver atrás si se aprobó por error. */
+                <>
+                  {!doc.erp_id && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleReopen}
+                      disabled={saving}
+                      title="Deshacer la aprobación y volver a pendiente"
+                    >
+                      <Undo2 className="h-4 w-4 mr-1" /> Volver a pendiente
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    className="bg-violet-600 hover:bg-violet-700 text-white"
+                    onClick={handlePushToErp}
+                    disabled={saving}
+                    title={
+                      doc.erp_id
+                        ? `Ya empujado como ${doc.erp_id}. Re-pushear creará un duplicado.`
+                        : "Crear pedido en el ERP"
+                    }
+                  >
+                    <Send className="h-4 w-4 mr-1" />
+                    {saving
+                      ? "Empujando..."
+                      : doc.erp_id
+                        ? "Re-empujar al ERP"
+                        : "Empujar al ERP"}
+                  </Button>
+                </>
               ) : (
                 <>
                   <Button

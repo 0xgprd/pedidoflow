@@ -212,8 +212,36 @@ class ERPNextAdapter:
 
         warnings: list[str] = []
 
+        # 0. Asegurar que Territory y Tax Category referenciados EXISTEN como
+        # Doctype en ERPNext. Si no, los creamos. El setup wizard solo crea
+        # algunos territories básicos — clientes franceses, alemanes etc.
+        # fallarían sin esto.
+        territory_to_use = registration.fiscal_address.country or self.config.default_territory
+        if territory_to_use:
+            try:
+                self._ensure_territory(territory_to_use)
+            except (ValidationError, NotFoundError) as e:
+                warnings.append(f"Territory '{territory_to_use}' no se pudo crear: {e}")
+                territory_to_use = self.config.default_territory
+
+        tax_label = self._TAX_CATEGORY_LABELS.get(registration.tax_category, "")
+        tax_category_ok = False
+        if tax_label:
+            try:
+                self._ensure_tax_category(tax_label)
+                tax_category_ok = True
+            except (ValidationError, NotFoundError) as e:
+                warnings.append(
+                    f"Tax Category '{tax_label}' no se pudo crear — "
+                    f"se omite del cliente (puedes asignarla a mano en el ERP): {e}"
+                )
+
         # 1. Crear Customer
-        customer_body = self._build_customer_body(registration)
+        customer_body = self._build_customer_body(
+            registration,
+            territory_override=territory_to_use,
+            include_tax_category=tax_category_ok,
+        )
         try:
             r = self._post("/api/resource/Customer", customer_body)
         except ValidationError as e:
@@ -296,12 +324,20 @@ class ERPNextAdapter:
         "unknown": "",
     }
 
-    def _build_customer_body(self, reg: CanonicalCustomerRegistration) -> dict[str, Any]:
+    def _build_customer_body(
+        self,
+        reg: CanonicalCustomerRegistration,
+        *,
+        territory_override: str | None = None,
+        include_tax_category: bool = True,
+    ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "customer_name": reg.company_name,
             "customer_type": "Company",
             "customer_group": self.config.default_customer_group,
-            "territory": reg.fiscal_address.country or self.config.default_territory,
+            "territory": territory_override
+            or reg.fiscal_address.country
+            or self.config.default_territory,
         }
         # Tax ID: preferimos eu_vat (intracom) sino tax_id local
         if reg.eu_vat:
@@ -309,12 +345,13 @@ class ERPNextAdapter:
         elif reg.tax_id:
             body["tax_id"] = reg.tax_id
 
-        # Tax category — solo se setea si ERPNext tiene la entrada creada.
-        # Si no, el campo se queda vacío y el implementador puede asignarla
-        # manualmente sin que falle el alta.
-        tax_label = self._TAX_CATEGORY_LABELS.get(reg.tax_category, "")
-        if tax_label:
-            body["tax_category"] = tax_label
+        # Tax category — solo se setea si el caller dice que ERPNext la tiene
+        # creada (o se ha auto-creado). Si no, el campo se queda vacío y el
+        # implementador puede asignarla manualmente sin que falle el alta.
+        if include_tax_category:
+            tax_label = self._TAX_CATEGORY_LABELS.get(reg.tax_category, "")
+            if tax_label:
+                body["tax_category"] = tax_label
 
         if reg.main_email:
             body["email_id"] = reg.main_email
@@ -410,6 +447,73 @@ class ERPNextAdapter:
     _SIGNED_BY_NAME_FIELDNAME = "orderflow_registration_signed_by_name"
     _SIGNED_BY_ROLE_FIELDNAME = "orderflow_registration_signed_by_role"
     _SIGNATURE_DATE_FIELDNAME = "orderflow_registration_signature_date"
+
+    # ---- Master data (Territory / Tax Category) auto-creados ----
+
+    def _ensure_territory(self, territory_name: str) -> None:
+        """Crea el Territory en ERPNext si no existe.
+
+        ERPNext valida `customer.territory` contra el doctype Territory. El
+        setup wizard solo crea algunos territories básicos (Spain, All
+        Territories, sus padres). Para clientes de otros países (France,
+        Germany, etc.) hay que crearlos al vuelo. Como hijos de
+        'All Territories'.
+        """
+        if not territory_name:
+            return
+        # Caché en memoria — no consultamos dos veces
+        if not hasattr(self, "_territory_cache"):
+            self._territory_cache: set[str] = set()
+        if territory_name in self._territory_cache:
+            return
+        # Existe en ERPNext?
+        existing = self._get_list(
+            "Territory",
+            filters=[["name", "=", territory_name]],
+            fields=["name"],
+        )
+        if existing:
+            self._territory_cache.add(territory_name)
+            return
+        # Crear como hijo de All Territories (root)
+        self._post(
+            "/api/resource/Territory",
+            {
+                "territory_name": territory_name,
+                "parent_territory": "All Territories",
+                "is_group": 0,
+            },
+        )
+        self._territory_cache.add(territory_name)
+        log.info("erpnext.territory.created", name=territory_name)
+
+    def _ensure_tax_category(self, tax_category_name: str) -> None:
+        """Crea la Tax Category en ERPNext si no existe.
+
+        Si el implementador ha definido Tax Rules vinculadas a esa categoría,
+        ERPNext aplicará los impuestos correctos automáticamente. Si no, la
+        categoría queda como simple etiqueta del cliente — sin daño.
+        """
+        if not tax_category_name:
+            return
+        if not hasattr(self, "_tax_category_cache"):
+            self._tax_category_cache: set[str] = set()
+        if tax_category_name in self._tax_category_cache:
+            return
+        existing = self._get_list(
+            "Tax Category",
+            filters=[["name", "=", tax_category_name]],
+            fields=["name"],
+        )
+        if existing:
+            self._tax_category_cache.add(tax_category_name)
+            return
+        self._post(
+            "/api/resource/Tax Category",
+            {"title": tax_category_name},
+        )
+        self._tax_category_cache.add(tax_category_name)
+        log.info("erpnext.tax_category.created", name=tax_category_name)
 
     def _ensure_supplier_number_field(self) -> None:
         if getattr(self, "_supplier_number_field_ensured", False):

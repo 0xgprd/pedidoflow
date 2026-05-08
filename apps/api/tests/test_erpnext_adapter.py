@@ -521,6 +521,13 @@ def test_register_customer_creates_customer_addresses_contacts() -> None:
         if method == "GET" and path == "/api/resource/Custom Field":
             return httpx.Response(200, json={"data": [{"name": "ok"}]})
 
+        # Territory + Tax Category — ya existen (no recreamos)
+        if method == "GET" and path in (
+            "/api/resource/Territory",
+            "/api/resource/Tax Category",
+        ):
+            return httpx.Response(200, json={"data": [{"name": "ok"}]})
+
         # Customer create
         if method == "POST" and path == "/api/resource/Customer":
             posts.append((path, json.loads(request.content)))
@@ -619,6 +626,11 @@ def test_register_customer_with_distinct_billing_creates_two_addresses() -> None
         method = request.method
         if method == "GET" and path == "/api/resource/Custom Field":
             return httpx.Response(200, json={"data": [{"name": "ok"}]})
+        if method == "GET" and path in (
+            "/api/resource/Territory",
+            "/api/resource/Tax Category",
+        ):
+            return httpx.Response(200, json={"data": [{"name": "ok"}]})
         if method == "POST" and path == "/api/resource/Customer":
             return httpx.Response(200, json={"data": {"name": "ACME"}})
         if method == "POST" and path == "/api/resource/Address":
@@ -638,6 +650,49 @@ def test_register_customer_with_distinct_billing_creates_two_addresses() -> None
     assert result.addresses_created == 2
 
 
+def test_register_customer_auto_creates_territory_when_missing() -> None:
+    """Si el Territory no existe en ERPNext (caso típico — solo viene Spain del
+    setup wizard), el adapter lo crea como hijo de 'All Territories'."""
+    from app.services.erp.canonical import (
+        CanonicalAddress,
+        CanonicalCustomerRegistration,
+    )
+
+    territory_creates: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        method = request.method
+        if method == "GET" and path == "/api/resource/Custom Field":
+            return httpx.Response(200, json={"data": [{"name": "ok"}]})
+        # Territory NO existe la primera vez
+        if method == "GET" and path == "/api/resource/Territory":
+            return httpx.Response(200, json={"data": []})
+        # Territory create
+        if method == "POST" and path == "/api/resource/Territory":
+            territory_creates.append(json.loads(request.content))
+            return httpx.Response(200, json={"data": {"name": "France"}})
+        # Tax Category presente
+        if method == "GET" and path == "/api/resource/Tax Category":
+            return httpx.Response(200, json={"data": [{"name": "ok"}]})
+        if method == "POST" and path == "/api/resource/Customer":
+            return httpx.Response(200, json={"data": {"name": "X"}})
+        if method == "POST" and path == "/api/resource/Address":
+            return httpx.Response(200, json={"data": {"name": "addr"}})
+        return httpx.Response(404)
+
+    reg = CanonicalCustomerRegistration(
+        source_document_id=uuid4(),
+        company_name="ACME France",
+        fiscal_address=CanonicalAddress(line1="x", city="y", postal_code="1", country="France"),
+    )
+    _make_adapter(handler).register_customer(reg)
+
+    assert len(territory_creates) == 1
+    assert territory_creates[0]["territory_name"] == "France"
+    assert territory_creates[0]["parent_territory"] == "All Territories"
+
+
 def test_register_customer_skips_unknown_tax_category() -> None:
     """Si tax_category=unknown, no se setea en el body (deja al implementador)."""
     from app.services.erp.canonical import (
@@ -650,6 +705,11 @@ def test_register_customer_skips_unknown_tax_category() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if request.method == "GET" and path == "/api/resource/Custom Field":
+            return httpx.Response(200, json={"data": [{"name": "ok"}]})
+        if request.method == "GET" and path in (
+            "/api/resource/Territory",
+            "/api/resource/Tax Category",
+        ):
             return httpx.Response(200, json={"data": [{"name": "ok"}]})
         if request.method == "POST" and path == "/api/resource/Customer":
             captured.update(json.loads(request.content))

@@ -156,45 +156,58 @@ export function CustomerRegistrationView({ doc, onUpdated }: Props) {
 
   return (
     <div className="space-y-5">
-      {alreadyRegistered ? (
-        <div className="rounded-lg border border-emerald-300 bg-emerald-50 p-4 flex items-start gap-3">
-          <Send className="h-5 w-5 text-emerald-700 mt-0.5 shrink-0" />
-          <div className="flex-1 min-w-0">
-            <div className="text-sm font-semibold text-emerald-900">
-              Cliente dado de alta en el ERP
+      {/* Barra superior sticky (coherente con la barra "Aprobar/Rechazar"
+          de los pedidos): icono + título a la izquierda, CTA a la derecha. */}
+      <div className="sticky top-0 z-20 -mx-8 px-8 py-2 bg-white/90 backdrop-blur border-b flex items-center gap-3">
+        {alreadyRegistered ? (
+          <>
+            <Send className="h-5 w-5 text-emerald-700 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <span className="text-sm font-medium text-emerald-900">
+                Cliente dado de alta en el ERP
+              </span>
+              <span className="ml-2 text-xs font-mono text-emerald-900/80">
+                {doc.erp_id}
+              </span>
             </div>
-            <p className="mt-1 text-sm text-emerald-900/90">
-              Este cliente está registrado como{" "}
-              <span className="font-mono font-medium">{doc.erp_id}</span>. Si quieres
-              modificar sus datos, edítalos directamente en el ERP — no aquí.
-            </p>
             {doc.erp_url && (
               <a
                 href={doc.erp_url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 mt-2 text-sm text-emerald-900 hover:underline"
+                className="text-sm text-emerald-900 hover:underline shrink-0"
               >
                 Ver en el ERP →
               </a>
             )}
-          </div>
-        </div>
-      ) : (
-        <div className="rounded-lg border border-indigo-300 bg-indigo-50 p-4 flex items-start gap-3">
-          <User className="h-5 w-5 text-indigo-700 mt-0.5 shrink-0" />
-          <div className="flex-1 min-w-0">
-            <div className="text-sm font-semibold text-indigo-900">
-              Ficha de alta de cliente
-            </div>
-            <p className="mt-1 text-sm text-indigo-900/90">
-              Revisa los datos extraídos por la IA. Cuando estés conforme, pulsa{" "}
-              <strong>"Dar de alta en el ERP"</strong> para crear el cliente con
-              direcciones, contactos y categoría fiscal — todo de una vez.
-            </p>
-          </div>
-        </div>
-      )}
+          </>
+        ) : (
+          <>
+            <User className="h-5 w-5 text-indigo-700 shrink-0" />
+            <span className="text-sm text-muted-foreground flex-1 min-w-0">
+              Revisa los datos y pulsa <strong className="text-indigo-900">"Dar de alta en el ERP"</strong>.
+            </span>
+            <Button
+              size="sm"
+              onClick={handleSubmit}
+              disabled={submitting}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white shrink-0"
+            >
+              {submitting ? (
+                <>
+                  <Save className="h-4 w-4 mr-2 animate-pulse" />
+                  Dando de alta...
+                </>
+              ) : (
+                <>
+                  <Send className="h-4 w-4 mr-1" />
+                  Dar de alta en el ERP
+                </>
+              )}
+            </Button>
+          </>
+        )}
+      </div>
 
       {error && (
         <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-900">
@@ -443,29 +456,6 @@ export function CustomerRegistrationView({ doc, onUpdated }: Props) {
         </FieldGrid>
       </Section>
 
-      {/* CTA */}
-      {!alreadyRegistered && (
-        <div className="sticky bottom-0 -mx-8 px-8 py-3 bg-white/95 backdrop-blur border-t flex items-center justify-end gap-2">
-          <Button
-            size="lg"
-            onClick={handleSubmit}
-            disabled={submitting}
-            className="bg-indigo-600 hover:bg-indigo-700 text-white"
-          >
-            {submitting ? (
-              <>
-                <Save className="h-4 w-4 mr-2 animate-pulse" />
-                Dando de alta...
-              </>
-            ) : (
-              <>
-                <Send className="h-4 w-4 mr-2" />
-                Dar de alta en el ERP
-              </>
-            )}
-          </Button>
-        </div>
-      )}
     </div>
   );
 }
