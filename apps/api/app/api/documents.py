@@ -99,6 +99,7 @@ def list_documents(
                 has_blocking_issues=d.has_blocking_issues,
                 has_discrepancies=d.has_discrepancies,
                 has_offer_link=has_link,
+                erp_id=d.erp_id,
                 created_at=d.created_at,
                 updated_at=d.updated_at,
                 processed_at=d.processed_at,

@@ -118,6 +118,11 @@ class ERPNextAdapter:
             lines=len(order.lines),
         )
 
+        # 0. Custom field "Quotation Reference" en Sales Order — solo se crea
+        # la primera vez que se necesita (idempotente).
+        if order.quotation_reference:
+            self._ensure_quotation_ref_field()
+
         # 1. Cliente: crear si no existe
         customer_name = self._ensure_customer(order.customer)
 
@@ -227,6 +232,44 @@ class ERPNextAdapter:
     # Body building
     # =========================================================================
 
+    # Nombre del custom field que añadimos a Sales Order para guardar el nº de
+    # oferta original que extrajo Order Flow del PDF (vínculo con la oferta de
+    # comercial). Prefijo `orderflow_` para no chocar con campos nativos.
+    _QUOTATION_REF_FIELDNAME = "orderflow_quotation_ref"
+
+    def _ensure_quotation_ref_field(self) -> None:
+        """Crea el Custom Field 'Quotation Reference' en Sales Order si no existe.
+
+        Idempotente: lookup primero, sólo crea si falta. Se llama una vez por
+        instancia ERPNext (la primera vez que un pedido lleva nº de oferta).
+        """
+        if getattr(self, "_quotation_field_ensured", False):
+            return
+        existing = self._get_list(
+            "Custom Field",
+            filters=[
+                ["dt", "=", "Sales Order"],
+                ["fieldname", "=", self._QUOTATION_REF_FIELDNAME],
+            ],
+        )
+        if not existing:
+            self._post(
+                "/api/resource/Custom Field",
+                {
+                    "dt": "Sales Order",
+                    "fieldname": self._QUOTATION_REF_FIELDNAME,
+                    "label": "Quotation Reference (Order Flow)",
+                    "fieldtype": "Data",
+                    "insert_after": "po_no",
+                    "description": (
+                        "Nº de oferta original extraído por Order Flow del PDF "
+                        "del cliente. Sirve de trazabilidad oferta↔pedido."
+                    ),
+                },
+            )
+            log.info("erpnext.custom_field.created", fieldname=self._QUOTATION_REF_FIELDNAME)
+        self._quotation_field_ensured = True
+
     def _build_sales_order_body(
         self, order: CanonicalSalesOrder, customer_name: str
     ) -> dict[str, Any]:
@@ -256,6 +299,8 @@ class ERPNextAdapter:
             body["delivery_date"] = order.delivery_date.isoformat()
         if order.customer_po_number:
             body["po_no"] = order.customer_po_number
+        if order.quotation_reference:
+            body[self._QUOTATION_REF_FIELDNAME] = order.quotation_reference
         if order.notes:
             body["terms"] = order.notes
 

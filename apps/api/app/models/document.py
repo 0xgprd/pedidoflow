@@ -136,6 +136,7 @@ class DocumentListItem(SQLModel):
     - `has_discrepancies`: pedido vinculado a oferta con diferencias precio/cantidad
     - `has_offer_link`: pedido tiene oferta vinculada (None para no-pedidos).
       Se calcula on-the-fly en `list_documents` (no es columna de DB).
+    - `erp_id`: si != null, el doc ya se empujó al ERP (pinta chip "Cargado al ERP").
     """
 
     id: UUID
@@ -149,6 +150,7 @@ class DocumentListItem(SQLModel):
     has_blocking_issues: bool
     has_discrepancies: bool
     has_offer_link: bool | None = None
+    erp_id: str | None = None
     created_at: datetime
     updated_at: datetime
     processed_at: datetime | None

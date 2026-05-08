@@ -200,6 +200,8 @@ export interface DocumentListItem {
   has_discrepancies: boolean;
   /** null para no-pedidos. true = tiene oferta vinculada. false = pedido sin oferta. */
   has_offer_link: boolean | null;
+  /** ID en el ERP (e.g. "SAL-ORD-2026-00001") si ya se cargó. null = no cargado. */
+  erp_id: string | null;
   created_at: string;
   updated_at: string;
   processed_at: string | null;

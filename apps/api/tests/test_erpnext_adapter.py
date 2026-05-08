@@ -125,6 +125,10 @@ def test_push_sales_order_creates_customer_items_and_so() -> None:
         path = request.url.path
         method = request.method
 
+        # Custom Field lookup → ya existe (no recreamos)
+        if method == "GET" and path == "/api/resource/Custom Field":
+            return httpx.Response(200, json={"data": [{"name": "ok"}]})
+
         # Customer lookup → vacío
         if method == "GET" and path == "/api/resource/Customer":
             assert "ATS" in request.url.params["filters"]
@@ -220,6 +224,9 @@ def test_push_sales_order_reuses_existing_customer_and_items() -> None:
         path = request.url.path
         method = request.method
 
+        if method == "GET" and path == "/api/resource/Custom Field":
+            return httpx.Response(200, json={"data": [{"name": "ok"}]})
+
         if method == "GET" and path == "/api/resource/Customer":
             return httpx.Response(200, json={"data": [{"name": "ATS"}]})
 
@@ -257,6 +264,8 @@ def test_push_sales_order_raises_validation_when_freight_account_missing() -> No
 
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
+        if request.method == "GET" and path == "/api/resource/Custom Field":
+            return httpx.Response(200, json={"data": [{"name": "ok"}]})
         if request.method == "GET" and path == "/api/resource/Customer":
             return httpx.Response(200, json={"data": [{"name": "ATS"}]})
         if request.method == "GET" and path == "/api/resource/Item":
@@ -272,11 +281,56 @@ def test_push_sales_order_raises_validation_when_freight_account_missing() -> No
         adapter.push_sales_order(_quimilock_order())
 
 
+def test_quotation_reference_creates_custom_field_first_time_and_includes_in_body() -> None:
+    """Si el field no existe, el adapter lo crea (POST Custom Field) y luego
+    incluye el nº de oferta en el body del Sales Order. La 2ª vez ya no se
+    consulta de nuevo (cache en instancia)."""
+    custom_field_creates: list[dict[str, Any]] = []
+    so_body: dict[str, Any] = {}
+    custom_field_get_calls = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        method = request.method
+
+        if method == "GET" and path == "/api/resource/Custom Field":
+            custom_field_get_calls[0] += 1
+            return httpx.Response(200, json={"data": []})  # ← no existe
+        if method == "POST" and path == "/api/resource/Custom Field":
+            custom_field_creates.append(json.loads(request.content))
+            return httpx.Response(200, json={"data": {"name": "Sales Order-orderflow_quotation_ref"}})
+        if method == "GET" and path == "/api/resource/Customer":
+            return httpx.Response(200, json={"data": [{"name": "ATS"}]})
+        if method == "GET" and path == "/api/resource/Item":
+            return httpx.Response(200, json={"data": [{"name": "found"}]})
+        if method == "GET" and path == "/api/resource/Account":
+            return httpx.Response(200, json={"data": [{"name": "5205 - Freight - QS"}]})
+        if method == "POST" and path == "/api/resource/Sales Order":
+            so_body.update(json.loads(request.content))
+            return httpx.Response(200, json={"data": {"name": "SAL-ORD-Q"}})
+        return httpx.Response(404)
+
+    adapter = _make_adapter(handler)
+    adapter.push_sales_order(_quimilock_order())
+
+    assert len(custom_field_creates) == 1
+    assert custom_field_creates[0]["dt"] == "Sales Order"
+    assert custom_field_creates[0]["fieldname"] == "orderflow_quotation_ref"
+    assert so_body["orderflow_quotation_ref"] == "TL260420-213M1"
+
+    # 2ª llamada: caché en instancia → no más GETs ni POSTs de Custom Field
+    adapter.push_sales_order(_quimilock_order())
+    assert custom_field_get_calls[0] == 1
+    assert len(custom_field_creates) == 1
+
+
 def test_push_sales_order_without_shipping_omits_taxes() -> None:
     captured_body: dict[str, Any] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
+        if request.method == "GET" and path == "/api/resource/Custom Field":
+            return httpx.Response(200, json={"data": [{"name": "ok"}]})
         if request.method == "GET" and path == "/api/resource/Customer":
             return httpx.Response(200, json={"data": [{"name": "ATS"}]})
         if request.method == "GET" and path == "/api/resource/Item":
@@ -310,6 +364,8 @@ def test_validation_error_on_417() -> None:
     """ERPNext devuelve 417 cuando rechaza el documento por reglas de negocio."""
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/resource/Custom Field":
+            return httpx.Response(200, json={"data": [{"name": "ok"}]})
         if request.url.path == "/api/resource/Customer":
             return httpx.Response(200, json={"data": [{"name": "ATS"}]})
         if request.url.path == "/api/resource/Item":

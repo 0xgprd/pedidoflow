@@ -10,6 +10,7 @@ import {
   Mail,
   ShieldX,
   Link2Off,
+  Send,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -319,11 +320,28 @@ function DocWarnings({ doc }: { doc: DocumentListItem }) {
     doc.document_type === "pedido" &&
     doc.has_offer_link === false &&
     SHOW_LINK_WARNING_STATUSES.has(doc.status);
+  const isPushedToErp = !!doc.erp_id;
 
-  if (!doc.has_blocking_issues && !doc.has_discrepancies && !showSinOferta) return null;
+  if (
+    !doc.has_blocking_issues &&
+    !doc.has_discrepancies &&
+    !showSinOferta &&
+    !isPushedToErp
+  ) {
+    return null;
+  }
 
   return (
     <>
+      {isPushedToErp && (
+        <span
+          title={`Cargado al ERP — ${doc.erp_id}`}
+          className="inline-flex items-center gap-1 rounded-full bg-violet-100 text-violet-900 border border-violet-300 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide"
+        >
+          <Send className="h-3 w-3" />
+          Cargado al ERP
+        </span>
+      )}
       {doc.has_blocking_issues && (
         <span
           title="Aprobación bloqueada por reglas o por precio bajo del mínimo del catálogo"
