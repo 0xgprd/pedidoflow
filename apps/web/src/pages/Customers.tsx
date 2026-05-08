@@ -15,8 +15,9 @@ import {
   Users,
   Building2,
   CheckCircle2,
-  AlertCircle,
   ExternalLink,
+  FileText,
+  HelpCircle,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -24,11 +25,13 @@ import { customersApi, getTenantId } from "@/lib/api";
 import type { CustomerSummary } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
+type FilterKey = "all" | "in_erp" | "ready_to_register" | "no_registration_form";
+
 export function Customers() {
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<"all" | "registered" | "pending">("all");
+  const [filter, setFilter] = useState<FilterKey>("all");
 
   const refresh = useCallback(async () => {
     if (!getTenantId()) return;
@@ -48,16 +51,19 @@ export function Customers() {
     refresh();
   }, [refresh]);
 
-  const filtered = customers.filter((c) => {
-    if (filter === "registered") return c.is_registered_in_erp;
-    if (filter === "pending") return !c.is_registered_in_erp;
-    return true;
-  });
+  const filtered = customers.filter((c) =>
+    filter === "all" ? true : c.registration_status === filter,
+  );
 
   const counts = {
     all: customers.length,
-    registered: customers.filter((c) => c.is_registered_in_erp).length,
-    pending: customers.filter((c) => !c.is_registered_in_erp).length,
+    in_erp: customers.filter((c) => c.registration_status === "in_erp").length,
+    ready_to_register: customers.filter(
+      (c) => c.registration_status === "ready_to_register",
+    ).length,
+    no_registration_form: customers.filter(
+      (c) => c.registration_status === "no_registration_form",
+    ).length,
   };
 
   return (
@@ -66,8 +72,10 @@ export function Customers() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Clientes</h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            Vista agregada de los clientes que han aparecido en pedidos, ofertas o
-            fichas de alta. Para crear o editar un cliente, hazlo en el ERP.
+            Cartera de clientes que han aparecido en pedidos, ofertas o fichas de alta.
+            Para empujar un pedido al ERP el cliente debe estar dado de alta — si
+            está <strong>"Sin ficha"</strong>, pídele al cliente que rellene la ficha
+            de alta y súbela aquí.
           </p>
         </div>
         <Button variant="outline" onClick={refresh} disabled={loading}>
@@ -82,20 +90,21 @@ export function Customers() {
         </div>
       )}
 
-      {/* Filtros */}
+      {/* Filtros — 3 estados claros sobre el alta del cliente */}
       <div className="flex gap-1 border-b">
         {(
           [
             { key: "all", label: "Todos", count: counts.all },
+            { key: "in_erp", label: "En ERP", count: counts.in_erp },
             {
-              key: "registered",
-              label: "Dados de alta en ERP",
-              count: counts.registered,
+              key: "ready_to_register",
+              label: "Ficha lista para alta",
+              count: counts.ready_to_register,
             },
             {
-              key: "pending",
-              label: "Pendientes de alta",
-              count: counts.pending,
+              key: "no_registration_form",
+              label: "Sin ficha",
+              count: counts.no_registration_form,
             },
           ] as const
         ).map((tab) => {
@@ -162,44 +171,7 @@ export function Customers() {
                     </div>
                   </td>
                   <td className="px-3 py-3">
-                    {c.is_registered_in_erp ? (
-                      <div className="space-y-0.5">
-                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-900 border border-emerald-300 px-2 py-0.5 text-xs font-medium">
-                          <CheckCircle2 className="h-3 w-3" />
-                          En ERP
-                        </span>
-                        {c.erp_customer_url && (
-                          <div>
-                            <a
-                              href={c.erp_customer_url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-xs text-blue-600 hover:underline inline-flex items-center gap-0.5"
-                            >
-                              {c.erp_customer_id}
-                              <ExternalLink className="h-2.5 w-2.5" />
-                            </a>
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="space-y-0.5">
-                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-900 border border-amber-300 px-2 py-0.5 text-xs font-medium">
-                          <AlertCircle className="h-3 w-3" />
-                          Pendiente alta
-                        </span>
-                        {c.fichas_count > 0 && c.registration_document_id && (
-                          <div>
-                            <Link
-                              to={`/inbox/${c.registration_document_id}`}
-                              className="text-xs text-blue-600 hover:underline"
-                            >
-                              Ficha extraída — revisar →
-                            </Link>
-                          </div>
-                        )}
-                      </div>
-                    )}
+                    <RegistrationStatusBadge customer={c} />
                   </td>
                   <td className="px-3 py-3 text-right">
                     <div className="tabular-nums font-medium">
@@ -228,6 +200,64 @@ export function Customers() {
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+function RegistrationStatusBadge({ customer }: { customer: CustomerSummary }) {
+  if (customer.registration_status === "in_erp") {
+    return (
+      <div className="space-y-0.5">
+        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-900 border border-emerald-300 px-2 py-0.5 text-xs font-medium">
+          <CheckCircle2 className="h-3 w-3" />
+          En ERP
+        </span>
+        {customer.erp_customer_url && (
+          <div>
+            <a
+              href={customer.erp_customer_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-blue-600 hover:underline inline-flex items-center gap-0.5"
+            >
+              {customer.erp_customer_id}
+              <ExternalLink className="h-2.5 w-2.5" />
+            </a>
+          </div>
+        )}
+      </div>
+    );
+  }
+  if (customer.registration_status === "ready_to_register") {
+    return (
+      <div className="space-y-0.5">
+        <span className="inline-flex items-center gap-1 rounded-full bg-indigo-100 text-indigo-900 border border-indigo-300 px-2 py-0.5 text-xs font-medium">
+          <FileText className="h-3 w-3" />
+          Ficha lista
+        </span>
+        {customer.registration_document_id && (
+          <div>
+            <Link
+              to={`/inbox/${customer.registration_document_id}`}
+              className="text-xs text-blue-600 hover:underline"
+            >
+              Revisar y dar de alta →
+            </Link>
+          </div>
+        )}
+      </div>
+    );
+  }
+  // no_registration_form
+  return (
+    <div className="space-y-0.5">
+      <span
+        className="inline-flex items-center gap-1 rounded-full bg-zinc-100 text-zinc-700 border border-zinc-300 px-2 py-0.5 text-xs font-medium"
+        title="Este cliente solo aparece en pedidos/ofertas. Para darlo de alta en el ERP necesitas su ficha de alta — pídesela al cliente."
+      >
+        <HelpCircle className="h-3 w-3" />
+        Sin ficha
+      </span>
     </div>
   );
 }

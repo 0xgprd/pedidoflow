@@ -157,10 +157,15 @@ class CustomerSummary(BaseModel):
     tax_id: str | None = None
 
     # Estado de alta en el ERP
+    # 3 estados posibles, mutuamente excluyentes:
+    #   "in_erp"        → has_extracted_registration && is_registered_in_erp
+    #   "ready_to_register" → has_extracted_registration && !is_registered_in_erp
+    #   "no_registration_form" → !has_extracted_registration
+    registration_status: str = "no_registration_form"
     is_registered_in_erp: bool = False
     erp_customer_id: str | None = None
     erp_customer_url: str | None = None
-    registration_document_id: UUID | None = None  # la ficha de alta
+    registration_document_id: UUID | None = None  # la ficha de alta (si existe)
 
     # Conteos
     pedidos_count: int = 0
@@ -252,11 +257,16 @@ def list_customers(
             c.ofertas_count += 1
         elif d.document_type == DocumentType.FICHA_CLIENTE:
             c.fichas_count += 1
+            # Guardamos siempre el ID de la ficha — incluso si no está dada
+            # de alta (para linkear en la UI 'Ficha lista para dar de alta').
+            if c.registration_document_id is None:
+                c.registration_document_id = d.id
             # Si la ficha fue dada de alta (erp_id presente) → marcar registrado
             if d.erp_id and not c.is_registered_in_erp:
                 c.is_registered_in_erp = True
                 c.erp_customer_id = d.erp_id
                 c.erp_customer_url = d.erp_url
+                # Esta ficha gana — ID concreto del que SE dio de alta
                 c.registration_document_id = d.id
 
         # Actividad (ventana de fechas)
@@ -266,10 +276,14 @@ def list_customers(
             if c.last_activity_at is None or d.created_at > c.last_activity_at:
                 c.last_activity_at = d.created_at
 
-    # Update preferimos display_name de fichas (más correcto) sobre pedidos.
-    # Ya está cubierto porque en el primer paso el display_name se setea con el
-    # primer doc visto — el orden no importa porque _customer_display_name es
-    # consistente.
+    # Calcular registration_status ahora que tenemos los conteos finales
+    for c in customers.values():
+        if c.is_registered_in_erp:
+            c.registration_status = "in_erp"
+        elif c.fichas_count > 0:
+            c.registration_status = "ready_to_register"
+        else:
+            c.registration_status = "no_registration_form"
 
     # Ordenamos por última actividad (más reciente primero)
     sorted_customers = sorted(

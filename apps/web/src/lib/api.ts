@@ -811,11 +811,18 @@ export const viesApi = {
 // Customers — vista agregada de clientes que han pasado por Order Flow
 // =============================================================================
 
+/** Estado del cliente respecto al alta en el ERP. */
+export type CustomerRegistrationStatus =
+  | "in_erp"               // tiene ficha y se dio de alta
+  | "ready_to_register"    // tiene ficha extraída, esperando alta
+  | "no_registration_form"; // solo aparece en pedidos/ofertas, sin ficha
+
 export interface CustomerSummary {
   key: string;
   display_name: string;
   eu_vat: string | null;
   tax_id: string | null;
+  registration_status: CustomerRegistrationStatus;
   is_registered_in_erp: boolean;
   erp_customer_id: string | null;
   erp_customer_url: string | null;
