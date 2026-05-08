@@ -20,6 +20,11 @@ import {
   Workflow as WorkflowIcon,
   Send,
   ExternalLink,
+  History,
+  Upload as UploadIcon,
+  Pencil,
+  RotateCcw,
+  UserPlus,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -32,6 +37,8 @@ import type {
   ComparisonResult,
   Confianza,
   CustomField,
+  DocumentEvent,
+  DocumentEventType,
   DocumentLinkRead,
   DocumentRead,
   DocumentStatus,
@@ -623,6 +630,8 @@ export function DocumentDetail() {
           )}
         </div>
       </div>
+
+      <DocumentHistory doc={doc} />
 
       <details className="rounded-lg border bg-card">
         <summary className="px-4 py-2 text-xs font-medium text-muted-foreground cursor-pointer select-none">
@@ -1960,4 +1969,245 @@ function getByPath(obj: unknown, path: string): string | null {
   if (typeof cur === "string") return cur;
   if (typeof cur === "number") return String(cur);
   return null;
+}
+
+// =============================================================================
+// Historial — timeline de acciones humanas + hitos automáticos del documento
+// =============================================================================
+
+/** Metadata por tipo de evento humano para renderizado en el timeline. */
+const EVENT_META: Record<
+  DocumentEventType,
+  { label: string; icon: typeof UploadIcon; cls: string; describe: (data: Record<string, unknown>) => string }
+> = {
+  uploaded: {
+    label: "Documento subido",
+    icon: UploadIcon,
+    cls: "text-zinc-700 bg-zinc-100",
+    describe: (d) => (typeof d.original_filename === "string" ? d.original_filename : ""),
+  },
+  reprocessed: {
+    label: "Re-procesado",
+    icon: RotateCcw,
+    cls: "text-amber-700 bg-amber-100",
+    describe: () => "Volvió a la cola de extracción IA",
+  },
+  type_changed: {
+    label: "Tipo cambiado",
+    icon: Tag,
+    cls: "text-violet-700 bg-violet-100",
+    describe: (d) => `${d.from ?? "?"} → ${d.to ?? "?"}`,
+  },
+  extracted_edited: {
+    label: "Datos editados",
+    icon: Pencil,
+    cls: "text-sky-700 bg-sky-100",
+    describe: () => "Correcciones manuales sobre la extracción",
+  },
+  linked_to_offer: {
+    label: "Vinculado a oferta",
+    icon: Link2,
+    cls: "text-emerald-700 bg-emerald-100",
+    describe: (d) =>
+      typeof d.match_strategy === "string"
+        ? `Matching: ${d.match_strategy}`
+        : "",
+  },
+  unlinked_from_offer: {
+    label: "Desvinculado de oferta",
+    icon: Link2Off,
+    cls: "text-zinc-700 bg-zinc-100",
+    describe: () => "",
+  },
+  approved: {
+    label: "Aprobado",
+    icon: Check,
+    cls: "text-emerald-700 bg-emerald-100",
+    describe: () => "",
+  },
+  rejected: {
+    label: "Rechazado",
+    icon: X,
+    cls: "text-red-700 bg-red-100",
+    describe: (d) => (typeof d.reason === "string" ? d.reason : ""),
+  },
+  reopened: {
+    label: "Vuelto a pendiente",
+    icon: Undo2,
+    cls: "text-zinc-700 bg-zinc-100",
+    describe: (d) => `${d.from_status ?? "?"} → ${d.to_status ?? "?"}`,
+  },
+  pushed_to_erp: {
+    label: "Cargado al ERP",
+    icon: Send,
+    cls: "text-violet-700 bg-violet-100",
+    describe: (d) => (typeof d.erp_id === "string" ? d.erp_id : ""),
+  },
+  push_to_erp_failed: {
+    label: "Error al cargar al ERP",
+    icon: AlertTriangle,
+    cls: "text-red-700 bg-red-100",
+    describe: (d) =>
+      typeof d.reason === "string"
+        ? `${d.reason}${d.customer_name ? ` (${d.customer_name})` : ""}`
+        : typeof d.error === "string"
+          ? String(d.error).slice(0, 120)
+          : "",
+  },
+  customer_registered: {
+    label: "Cliente dado de alta",
+    icon: UserPlus,
+    cls: "text-emerald-700 bg-emerald-100",
+    describe: (d) => (typeof d.erp_customer_id === "string" ? d.erp_customer_id : ""),
+  },
+  customer_register_failed: {
+    label: "Error al dar de alta cliente",
+    icon: AlertTriangle,
+    cls: "text-red-700 bg-red-100",
+    describe: (d) =>
+      typeof d.error === "string" ? String(d.error).slice(0, 120) : "",
+  },
+};
+
+function DocumentHistory({ doc }: { doc: DocumentRead }) {
+  const [events, setEvents] = useState<DocumentEvent[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const list = await api.listEvents(doc.id);
+      setEvents(list);
+      setLoaded(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [doc.id]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  // Hitos automáticos del documento (creado / extraído por IA) — no son
+  // eventos del audit log pero el user los quiere ver junto con las acciones
+  // humanas. Los renderizamos como fila gris al inicio del timeline.
+  const automaticMilestones: Array<{
+    label: string;
+    date: string;
+    sublabel: string;
+  }> = [];
+  if (doc.created_at) {
+    const isUpload = doc.source === "upload";
+    automaticMilestones.push({
+      label: isUpload ? "Llegó al sistema" : "Recibido por correo",
+      date: doc.created_at,
+      sublabel:
+        doc.source_email ?? (isUpload ? "Subido manualmente" : "Polling Outlook"),
+    });
+  }
+  if (doc.processed_at) {
+    automaticMilestones.push({
+      label: "IA terminó la extracción",
+      date: doc.processed_at,
+      sublabel: "OCR + Claude",
+    });
+  }
+
+  return (
+    <div className="rounded-lg border bg-card">
+      <div className="px-4 py-2.5 border-b flex items-center gap-2">
+        <History className="h-4 w-4 text-muted-foreground" />
+        <span className="text-sm font-medium">Historial</span>
+        <span className="text-xs text-muted-foreground">
+          ({automaticMilestones.length} hitos del sistema + {events.length} acciones)
+        </span>
+        <button
+          onClick={refresh}
+          disabled={loading}
+          className="ml-auto text-xs text-blue-600 hover:underline disabled:opacity-50"
+        >
+          {loading ? "Cargando..." : "Refrescar"}
+        </button>
+      </div>
+
+      {error && (
+        <div className="px-4 py-2 text-xs text-red-700 bg-red-50 border-t border-red-200">
+          {error}
+        </div>
+      )}
+
+      <div className="px-4 py-3">
+        <ol className="relative border-l-2 border-zinc-200 ml-2 space-y-3">
+          {/* Hitos automáticos (gris, sin actor) */}
+          {automaticMilestones.map((m, idx) => (
+            <li key={`milestone-${idx}`} className="ml-3 flex items-start gap-3">
+              <span className="absolute -left-[7px] mt-1 w-3 h-3 rounded-full bg-zinc-300 border-2 border-white" />
+              <div className="flex-1 min-w-0 pl-3">
+                <div className="text-sm font-medium text-zinc-800">{m.label}</div>
+                <div className="text-xs text-muted-foreground">
+                  {m.sublabel} · {formatTimelineDate(m.date)}
+                </div>
+              </div>
+            </li>
+          ))}
+
+          {/* Eventos humanos */}
+          {events.map((e) => {
+            const meta = EVENT_META[e.event_type];
+            if (!meta) return null;
+            const Icon = meta.icon;
+            const description = meta.describe(e.event_data);
+            const actor = e.actor_label || e.actor_email || "anónimo";
+            return (
+              <li key={e.id} className="ml-3 flex items-start gap-3">
+                <span
+                  className={cn(
+                    "absolute -left-[11px] mt-0.5 w-5 h-5 rounded-full border-2 border-white inline-flex items-center justify-center",
+                    meta.cls,
+                  )}
+                >
+                  <Icon className="h-3 w-3" />
+                </span>
+                <div className="flex-1 min-w-0 pl-3">
+                  <div className="text-sm font-medium text-foreground">
+                    {meta.label}
+                    {description && (
+                      <span className="ml-2 text-xs text-muted-foreground font-normal">
+                        — {description}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {actor} · {formatTimelineDate(e.created_at)}
+                  </div>
+                </div>
+              </li>
+            );
+          })}
+
+          {loaded && events.length === 0 && automaticMilestones.length === 0 && (
+            <li className="ml-3 text-sm text-muted-foreground italic">
+              Sin actividad registrada todavía.
+            </li>
+          )}
+        </ol>
+      </div>
+    </div>
+  );
+}
+
+function formatTimelineDate(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleString("es-ES", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }

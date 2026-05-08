@@ -145,6 +145,23 @@ def _eval_op(actual: Any, op: str, expected: Any, *, case_insensitive: bool = Fa
     if op == "is_not_null":
         return actual is not None
 
+    # is_blank: vale para campos opcionales (null, string vacío o número 0).
+    # Útil para "transporte vacío", "iva sin especificar", etc.
+    if op == "is_blank":
+        if actual is None:
+            return True
+        if isinstance(actual, str) and not actual.strip():
+            return True
+        n = _to_number(actual)
+        return n is not None and n == 0
+    if op == "is_not_blank":
+        if actual is None:
+            return False
+        if isinstance(actual, str) and not actual.strip():
+            return False
+        n = _to_number(actual)
+        return not (n is not None and n == 0)
+
     # Numéricos
     if op in ("lt", "lte", "gt", "gte"):
         an = _to_number(actual)

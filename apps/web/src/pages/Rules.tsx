@@ -20,6 +20,7 @@ import { cn } from "@/lib/utils";
 const FIELDS: Array<{ value: string; label: string; group: string; type: "number" | "string" | "exists" }> = [
   // Totales
   { value: "totales.subtotal_ht", label: "Subtotal HT (€)", group: "Totales", type: "number" },
+  { value: "totales.transporte", label: "Transporte (€)", group: "Totales", type: "number" },
   { value: "totales.iva", label: "IVA", group: "Totales", type: "number" },
   { value: "totales.total_ttc", label: "Total TTC (€)", group: "Totales", type: "number" },
   // Cliente
@@ -54,6 +55,10 @@ const OPERATORS: Array<{ value: RuleOperator; label: string; types: ("number" | 
   { value: "matches", label: "regex", types: ["string"] },
   { value: "exists", label: "existe", types: ["number", "string", "exists"] },
   { value: "not_exists", label: "no existe", types: ["number", "string", "exists"] },
+  // Útiles para campos numéricos opcionales (transporte, IVA): "vacío"
+  // significa null o cero. Lo opuesto, "informado", excluye ambos.
+  { value: "is_blank", label: "está vacío o es 0", types: ["number", "string"] },
+  { value: "is_not_blank", label: "está informado (≠0 y no vacío)", types: ["number", "string"] },
 ];
 
 const ACTION_LABELS: Record<RuleAction, string> = {
@@ -502,7 +507,14 @@ function ConditionEditor({
   const fieldDef = FIELDS.find((f) => f.value === condition.field);
   const fieldType = fieldDef?.type ?? "string";
   const validOps = OPERATORS.filter((o) => o.types.includes(fieldType));
-  const opNeedsValue = !["exists", "not_exists", "is_null", "is_not_null"].includes(condition.operator);
+  const opNeedsValue = ![
+    "exists",
+    "not_exists",
+    "is_null",
+    "is_not_null",
+    "is_blank",
+    "is_not_blank",
+  ].includes(condition.operator);
 
   return (
     <div className="grid grid-cols-12 gap-2 items-start rounded border bg-card p-2">

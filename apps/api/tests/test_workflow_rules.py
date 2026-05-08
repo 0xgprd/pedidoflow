@@ -96,6 +96,50 @@ def test_exists() -> None:
     )
 
 
+def test_is_blank_covers_null_zero_and_empty_string() -> None:
+    """Caso real: 'transporte vacío' = null O 0 O '' (todos significan
+    'sin transporte')."""
+    cond = {"field": "totales.transporte", "operator": "is_blank"}
+    assert evaluate_condition(cond, {"totales": {"transporte": None}}) is True
+    assert evaluate_condition(cond, {"totales": {"transporte": 0}}) is True
+    assert evaluate_condition(cond, {"totales": {"transporte": 0.0}}) is True
+    assert evaluate_condition(cond, {"totales": {}}) is True  # ausente = blank
+    assert evaluate_condition(cond, {"totales": {"transporte": ""}}) is True
+    assert evaluate_condition(cond, {"totales": {"transporte": "   "}}) is True
+
+    # Si tiene importe distinto de 0 → NO es blank
+    assert evaluate_condition(cond, {"totales": {"transporte": 50.0}}) is False
+    assert evaluate_condition(cond, {"totales": {"transporte": "50"}}) is False
+
+
+def test_is_not_blank_is_inverse() -> None:
+    cond = {"field": "totales.transporte", "operator": "is_not_blank"}
+    assert evaluate_condition(cond, {"totales": {"transporte": None}}) is False
+    assert evaluate_condition(cond, {"totales": {"transporte": 0}}) is False
+    assert evaluate_condition(cond, {"totales": {"transporte": 50}}) is True
+
+
+def test_combined_rule_pedido_pequeno_sin_transporte() -> None:
+    """El caso real del user: pedido < 2500 € sin transporte → discrepancia."""
+    extracted = {"totales": {"subtotal_ht": 1500.0, "transporte": None, "total_ttc": 1815.0}}
+    # Condición 1: total < 2500 ✓
+    c1 = evaluate_condition(
+        {"field": "totales.total_ttc", "operator": "lt", "value": 2500}, extracted
+    )
+    # Condición 2: transporte vacío ✓
+    c2 = evaluate_condition({"field": "totales.transporte", "operator": "is_blank"}, extracted)
+    assert c1 and c2
+
+    # Si lleva transporte de 100€, ya NO se cumple la 2ª condición
+    extracted_con_transporte = {
+        "totales": {"subtotal_ht": 1500.0, "transporte": 100.0, "total_ttc": 1815.0}
+    }
+    c2_con = evaluate_condition(
+        {"field": "totales.transporte", "operator": "is_blank"}, extracted_con_transporte
+    )
+    assert c2_con is False
+
+
 # =============================================================================
 # Reglas completas
 # =============================================================================

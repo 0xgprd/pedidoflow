@@ -290,6 +290,36 @@ export interface CustomerRegistrationPayload {
   signature_date?: string | null;
 }
 
+// =============================================================================
+// Audit log — historial de acciones humanas sobre un documento
+// =============================================================================
+
+export type DocumentEventType =
+  | "uploaded"
+  | "reprocessed"
+  | "type_changed"
+  | "extracted_edited"
+  | "linked_to_offer"
+  | "unlinked_from_offer"
+  | "approved"
+  | "rejected"
+  | "reopened"
+  | "pushed_to_erp"
+  | "push_to_erp_failed"
+  | "customer_registered"
+  | "customer_register_failed";
+
+export interface DocumentEvent {
+  id: string;
+  document_id: string;
+  event_type: DocumentEventType;
+  actor_email: string | null;
+  actor_user_id: string | null;
+  actor_label: string | null;
+  event_data: Record<string, unknown>;
+  created_at: string;
+}
+
 /** Item ligero de la lista — sin extracted_json (10-50× menos payload). */
 export interface DocumentListItem {
   id: string;
@@ -412,6 +442,8 @@ export const api = {
       method: "POST",
       body: "{}",
     }),
+  listEvents: (id: string) =>
+    request<DocumentEvent[]>(`/api/v1/documents/${id}/events`),
   registerCustomer: (id: string, payload: CustomerRegistrationPayload) =>
     request<DocumentRead>(`/api/v1/documents/${id}/register-customer`, {
       method: "POST",
@@ -860,7 +892,8 @@ export type RuleScope = "all" | "pedido" | "oferta";
 export type RuleOperator =
   | "lt" | "lte" | "gt" | "gte" | "eq" | "neq"
   | "contains" | "not_contains" | "equals" | "not_equals" | "matches"
-  | "exists" | "not_exists" | "is_null" | "is_not_null";
+  | "exists" | "not_exists" | "is_null" | "is_not_null"
+  | "is_blank" | "is_not_blank";
 
 export interface RuleCondition {
   field: string;

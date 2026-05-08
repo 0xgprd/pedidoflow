@@ -9,7 +9,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import load_only
 from sqlmodel import Session, select
 
-from app.api.deps import get_current_tenant_id
+from app.api.deps import get_current_tenant_id, get_current_user_optional
+from app.core.auth import SupabaseUser
 from app.core.db import get_session
 from app.core.logging import get_logger
 from app.models.catalog_item import CatalogItem
@@ -21,8 +22,10 @@ from app.models.document import (
     DocumentStatus,
     DocumentType,
 )
+from app.models.document_event import DocumentEvent, DocumentEventRead, DocumentEventType
 from app.models.document_link import DocumentLink, DocumentLinkRead, MatchStrategy
 from app.models.workflow_rule import WorkflowRule
+from app.services.audit import Actor, record_event
 from app.services.classification import classify_document
 from app.services.erp import (
     AuthError,
@@ -188,6 +191,7 @@ async def upload_document(
     tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
     session: Annotated[Session, Depends(get_session)],
     file: Annotated[UploadFile, File(description="PDF del pedido")],
+    current_user: Annotated[SupabaseUser | None, Depends(get_current_user_optional)] = None,
 ) -> Document:
     """Sube un PDF, lo guarda en storage y crea Document `pending`.
 
@@ -228,6 +232,15 @@ async def upload_document(
     session.commit()
     session.refresh(doc)
 
+    # Audit: subida manual ES acción humana (la del polling de Outlook NO).
+    record_event(
+        session,
+        doc,
+        event_type=DocumentEventType.UPLOADED,
+        actor=Actor.from_user(current_user),
+        event_data={"original_filename": file.filename, "size_bytes": len(body)},
+    )
+
     # Encolar extracción IA (no romper si broker no está disponible).
     try:
         from app.workers.tasks import extract_document  # local import: evita circulares
@@ -245,11 +258,40 @@ async def upload_document(
     return doc
 
 
+@router.get("/{document_id}/events", response_model=list[DocumentEventRead])
+def list_document_events(
+    document_id: UUID,
+    tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
+    session: Annotated[Session, Depends(get_session)],
+) -> list[DocumentEvent]:
+    """Devuelve el historial de acciones humanas sobre el documento.
+
+    Las acciones automáticas (extracción IA, polling de Outlook, matching
+    automático) NO aparecen aquí — solo lo que ha hecho un humano vía UI.
+    El "creado" y "extraído por IA" se ven en `Document.created_at` y
+    `Document.processed_at` directamente.
+
+    Orden cronológico ascendente (primero el más viejo, igual que un timeline).
+    """
+    doc = session.get(Document, document_id)
+    if doc is None or doc.tenant_id != tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    events = session.exec(
+        select(DocumentEvent)
+        .where(DocumentEvent.document_id == document_id)
+        .where(DocumentEvent.tenant_id == tenant_id)
+        .order_by(DocumentEvent.created_at.asc())  # type: ignore[union-attr]
+    ).all()
+    return list(events)
+
+
 @router.post("/{document_id}/reprocess", response_model=DocumentRead)
 def reprocess_document(
     document_id: UUID,
     tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
     session: Annotated[Session, Depends(get_session)],
+    current_user: Annotated[SupabaseUser | None, Depends(get_current_user_optional)] = None,
 ) -> Document:
     """Re-encola la extracción IA sobre un documento ya procesado.
 
@@ -288,6 +330,13 @@ def reprocess_document(
     session.add(doc)
     session.commit()
     session.refresh(doc)
+
+    record_event(
+        session,
+        doc,
+        event_type=DocumentEventType.REPROCESSED,
+        actor=Actor.from_user(current_user),
+    )
 
     try:
         from app.workers.tasks import extract_document
@@ -344,6 +393,7 @@ def patch_extracted(
     payload: ExtractedJsonPatch,
     tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
     session: Annotated[Session, Depends(get_session)],
+    current_user: Annotated[SupabaseUser | None, Depends(get_current_user_optional)] = None,
 ) -> Document:
     """Guarda correcciones humanas sobre `extracted_json`.
 
@@ -364,6 +414,14 @@ def patch_extracted(
     session.add(doc)
     session.commit()
     session.refresh(doc)
+
+    record_event(
+        session,
+        doc,
+        event_type=DocumentEventType.EXTRACTED_EDITED,
+        actor=Actor.from_user(current_user),
+    )
+
     log.info("document.extracted.patched", document_id=str(document_id))
     return doc
 
@@ -383,6 +441,7 @@ def patch_document_type(
     payload: TypePatch,
     tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
     session: Annotated[Session, Depends(get_session)],
+    current_user: Annotated[SupabaseUser | None, Depends(get_current_user_optional)] = None,
 ) -> Document:
     """Cambio manual del tipo de documento (pedido / oferta / desconocido).
 
@@ -399,6 +458,18 @@ def patch_document_type(
     session.add(doc)
     session.commit()
     session.refresh(doc)
+
+    if old_type != payload.document_type:
+        record_event(
+            session,
+            doc,
+            event_type=DocumentEventType.TYPE_CHANGED,
+            actor=Actor.from_user(current_user),
+            event_data={
+                "from": str(old_type) if old_type else None,
+                "to": str(payload.document_type),
+            },
+        )
 
     # Si dejó de ser pedido → quitar el link como pedido si existía
     if old_type == DocumentType.PEDIDO and payload.document_type != DocumentType.PEDIDO:
@@ -441,8 +512,8 @@ def patch_document_type(
     log.info(
         "document.type.patched",
         document_id=str(document_id),
-        old_type=old_type.value,
-        new_type=payload.document_type.value,
+        old_type=str(old_type),
+        new_type=str(payload.document_type),
     )
     return doc
 
@@ -720,6 +791,7 @@ def link_offer_manually(
     payload: LinkOfferPayload,
     tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
     session: Annotated[Session, Depends(get_session)],
+    current_user: Annotated[SupabaseUser | None, Depends(get_current_user_optional)] = None,
 ) -> DocumentLink:
     """Vincula un pedido a una oferta manualmente (sustituye link previo si lo hay)."""
     order = session.get(Document, document_id)
@@ -760,6 +832,17 @@ def link_offer_manually(
     session.commit()
     session.refresh(link)
 
+    record_event(
+        session,
+        order,
+        event_type=DocumentEventType.LINKED_TO_OFFER,
+        actor=Actor.from_user(current_user),
+        event_data={
+            "offer_document_id": str(payload.offer_document_id),
+            "match_strategy": "manual",
+        },
+    )
+
     # Tras link manual, intentar también la expansión 1-línea-resumen
     from app.workers.tasks import _maybe_expand_lines_from_offer
 
@@ -773,6 +856,7 @@ def unlink_offer(
     document_id: UUID,
     tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
     session: Annotated[Session, Depends(get_session)],
+    current_user: Annotated[SupabaseUser | None, Depends(get_current_user_optional)] = None,
 ) -> None:
     doc = session.get(Document, document_id)
     if doc is None or doc.tenant_id != tenant_id:
@@ -782,10 +866,19 @@ def unlink_offer(
     ).first()
     if existing is None:
         return
+    offer_id_unlinked = existing.offer_document_id
     session.delete(existing)
     doc.has_discrepancies = False
     session.add(doc)
     session.commit()
+
+    record_event(
+        session,
+        doc,
+        event_type=DocumentEventType.UNLINKED_FROM_OFFER,
+        actor=Actor.from_user(current_user),
+        event_data={"offer_document_id": str(offer_id_unlinked)},
+    )
 
 
 @router.post("/{document_id}/auto-link", response_model=DocumentLinkRead | None)
@@ -793,6 +886,7 @@ def auto_link_offer(
     document_id: UUID,
     tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
     session: Annotated[Session, Depends(get_session)],
+    current_user: Annotated[SupabaseUser | None, Depends(get_current_user_optional)] = None,
 ) -> DocumentLink | None:
     """Re-intenta el matching automático (útil cuando han llegado nuevas ofertas)."""
     order = session.get(Document, document_id)
@@ -834,6 +928,19 @@ def auto_link_offer(
     session.commit()
     session.refresh(link)
 
+    # auto-link disparado por click humano ("Buscar oferta") → traza humano.
+    record_event(
+        session,
+        order,
+        event_type=DocumentEventType.LINKED_TO_OFFER,
+        actor=Actor.from_user(current_user),
+        event_data={
+            "offer_document_id": str(offer.id),
+            "match_strategy": str(strategy),
+            "match_score": float(score),
+        },
+    )
+
     # Tras vincular: si el pedido es 1-línea-resumen y los totales con la oferta
     # cuadran, expandir las líneas con las refs reales de la oferta. Hace
     # innecesario re-procesar el pedido entero (no llama a OCR/Claude).
@@ -850,6 +957,7 @@ def patch_status(
     payload: StatusPatch,
     tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
     session: Annotated[Session, Depends(get_session)],
+    current_user: Annotated[SupabaseUser | None, Depends(get_current_user_optional)] = None,
 ) -> Document:
     """Cambia el estado del documento (aprobar/rechazar/reabrir).
 
@@ -880,6 +988,7 @@ def patch_status(
                 },
             )
 
+    old_status = doc.status
     doc.status = payload.status
     if payload.reason:
         doc.extraction_error = f"[{payload.status}] {payload.reason}"
@@ -887,6 +996,34 @@ def patch_status(
     session.add(doc)
     session.commit()
     session.refresh(doc)
+
+    # Audit: mapeo del nuevo estado a un evento humano.
+    # APPROVED → APPROVED, REJECTED → REJECTED.
+    # EXTRACTED después de approved/rejected → REOPENED (volver a pendiente).
+    event_type: DocumentEventType | None = None
+    if payload.status == DocumentStatus.APPROVED:
+        event_type = DocumentEventType.APPROVED
+    elif payload.status == DocumentStatus.REJECTED:
+        event_type = DocumentEventType.REJECTED
+    elif payload.status == DocumentStatus.EXTRACTED and old_status in (
+        DocumentStatus.APPROVED,
+        DocumentStatus.REJECTED,
+    ):
+        event_type = DocumentEventType.REOPENED
+
+    if event_type is not None:
+        record_event(
+            session,
+            doc,
+            event_type=event_type,
+            actor=Actor.from_user(current_user),
+            event_data={
+                "from_status": str(old_status),
+                "to_status": str(payload.status),
+                "reason": payload.reason,
+            },
+        )
+
     log.info(
         "document.status.patched",
         document_id=str(document_id),
@@ -905,6 +1042,7 @@ def push_document_to_erp(
     document_id: UUID,
     tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
     session: Annotated[Session, Depends(get_session)],
+    current_user: Annotated[SupabaseUser | None, Depends(get_current_user_optional)] = None,
 ) -> Document:
     """Empuja el documento al ERP configurado (hoy: ERPNext).
 
@@ -981,6 +1119,13 @@ def push_document_to_erp(
         doc.updated_at = datetime.now(UTC)
         session.add(doc)
         session.commit()
+        record_event(
+            session,
+            doc,
+            event_type=DocumentEventType.PUSH_TO_ERP_FAILED,
+            actor=Actor.from_user(current_user),
+            event_data={"reason": "customer_not_registered", "customer_name": e.customer_name},
+        )
         log.info(
             "erp.push.customer_not_registered",
             document_id=str(document_id),
@@ -1005,6 +1150,13 @@ def push_document_to_erp(
         doc.updated_at = datetime.now(UTC)
         session.add(doc)
         session.commit()
+        record_event(
+            session,
+            doc,
+            event_type=DocumentEventType.PUSH_TO_ERP_FAILED,
+            actor=Actor.from_user(current_user),
+            event_data={"error_type": type(e).__name__, "error": str(e)[:500]},
+        )
         log.warning(
             "erp.push.validation_error",
             document_id=str(document_id),
@@ -1037,6 +1189,18 @@ def push_document_to_erp(
     session.add(doc)
     session.commit()
     session.refresh(doc)
+
+    record_event(
+        session,
+        doc,
+        event_type=DocumentEventType.PUSHED_TO_ERP,
+        actor=Actor.from_user(current_user),
+        event_data={
+            "adapter": adapter.name,
+            "erp_id": result.erp_id,
+            "erp_url": result.erp_url,
+        },
+    )
 
     log.info(
         "erp.push.ok",
@@ -1148,6 +1312,7 @@ def register_customer_from_document(
     payload: CustomerRegistrationPayload,
     tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
     session: Annotated[Session, Depends(get_session)],
+    current_user: Annotated[SupabaseUser | None, Depends(get_current_user_optional)] = None,
 ) -> Document:
     """Da de alta un cliente en el ERP a partir de los datos revisados de
     una ficha de alta.
@@ -1242,6 +1407,13 @@ def register_customer_from_document(
         doc.updated_at = datetime.now(UTC)
         session.add(doc)
         session.commit()
+        record_event(
+            session,
+            doc,
+            event_type=DocumentEventType.CUSTOMER_REGISTER_FAILED,
+            actor=Actor.from_user(current_user),
+            event_data={"error_type": type(e).__name__, "error": str(e)[:500]},
+        )
         log.warning(
             "erp.register_customer.validation_error",
             document_id=str(document_id),
@@ -1275,6 +1447,20 @@ def register_customer_from_document(
     session.add(doc)
     session.commit()
     session.refresh(doc)
+
+    record_event(
+        session,
+        doc,
+        event_type=DocumentEventType.CUSTOMER_REGISTERED,
+        actor=Actor.from_user(current_user),
+        event_data={
+            "adapter": adapter.name,
+            "erp_customer_id": result.erp_customer_id,
+            "erp_customer_url": result.erp_customer_url,
+            "addresses_created": result.addresses_created,
+            "contacts_created": result.contacts_created,
+        },
+    )
 
     log.info(
         "erp.register_customer.ok",
