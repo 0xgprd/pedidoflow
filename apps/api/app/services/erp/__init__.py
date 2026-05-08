@@ -13,6 +13,7 @@ Implementaciones concretas:
 
 from app.services.erp.adapter import (
     AuthError,
+    CustomerNotRegisteredError,
     ERPAdapter,
     ERPAdapterError,
     NotFoundError,
@@ -37,6 +38,7 @@ __all__ = [
     "CanonicalInvoice",
     "CanonicalLine",
     "CanonicalSalesOrder",
+    "CustomerNotRegisteredError",
     "ERPAdapter",
     "ERPAdapterError",
     "NotFoundError",

@@ -26,6 +26,7 @@ from app.models.workflow_rule import WorkflowRule
 from app.services.classification import classify_document
 from app.services.erp import (
     AuthError,
+    CustomerNotRegisteredError,
     ERPAdapterError,
     TransientError,
     extracted_to_sales_order,
@@ -908,6 +909,32 @@ def push_document_to_erp(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Credenciales del ERP rechazadas. Revisa ERPNEXT_API_KEY/SECRET.",
+        ) from e
+    except CustomerNotRegisteredError as e:
+        # Estado de negocio NORMAL: el cliente no está dado de alta en el ERP.
+        # Guardamos el error para que la UI pueda mostrar acción específica
+        # ("Dar de alta cliente"), no un genérico "intenta de nuevo".
+        doc.erp_push_error = f"customer_not_registered: {e.customer_name}"
+        doc.updated_at = datetime.now(UTC)
+        session.add(doc)
+        session.commit()
+        log.info(
+            "erp.push.customer_not_registered",
+            document_id=str(document_id),
+            customer_name=e.customer_name,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "customer_not_registered",
+                "message": (
+                    f"El cliente '{e.customer_name}' no está dado de alta en tu ERP. "
+                    "Sube primero la ficha de alta del cliente para que Order Flow lo "
+                    "registre con todos sus datos (dirección, contacto, condiciones de pago)."
+                ),
+                "customer_name": e.customer_name,
+                "lookup_hints": e.lookup_hints,
+            },
         ) from e
     except (ERPNotFoundError, ERPValidationError) as e:
         # Error semántico del ERP — guardamos para diagnóstico

@@ -23,6 +23,7 @@ import httpx
 from app.core.logging import get_logger
 from app.services.erp.adapter import (
     AuthError,
+    CustomerNotRegisteredError,
     NotFoundError,
     PushResult,
     TransientError,
@@ -123,8 +124,12 @@ class ERPNextAdapter:
         if order.quotation_reference:
             self._ensure_quotation_ref_field()
 
-        # 1. Cliente: crear si no existe
-        customer_name = self._ensure_customer(order.customer)
+        # 1. Cliente: BUSCAR si existe. NO crear desde un pedido — los clientes
+        # se dan de alta con una ficha específica (ver `register_customer`).
+        # Si el cliente no existe, lanzamos CustomerNotRegisteredError y el
+        # caller (endpoint) responde al usuario con instrucciones para subir
+        # la ficha de alta.
+        customer_name = self._lookup_customer_or_fail(order.customer)
 
         # 2. Items: crear si no existen
         for line in order.lines:
@@ -173,32 +178,57 @@ class ERPNextAdapter:
     # Customer / Item bootstrap
     # =========================================================================
 
-    def _ensure_customer(self, customer: CanonicalCustomer) -> str:
-        """Devuelve el `name` (PK) del Customer en ERPNext, creándolo si no existe.
+    def _lookup_customer_or_fail(self, customer: CanonicalCustomer) -> str:
+        """Devuelve el `name` (PK) del Customer en ERPNext.
 
-        Lookup por `customer_name` (case-sensitive). Esto evita duplicados cuando
-        el mismo cliente aparece en varios pedidos.
+        Busca en este orden (más específico → más laxo):
+            1. Por `tax_id` exacto (eu_vat o cif/nif). Es el match más fiable
+               cuando el dato está disponible.
+            2. Por `customer_name` exacto.
+            3. Por `customer_name` normalizado (sin mayúsculas, sin sufijos
+               sociales típicos como SAS/SARL/SA/SL/SLU/SAU).
+
+        Si nada coincide, lanza `CustomerNotRegisteredError` con la lista de
+        intentos para que el caller pueda comunicarlo al usuario.
         """
-        existing = self._get_list("Customer", filters=[["customer_name", "=", customer.name]])
-        if existing:
-            return existing[0]["name"]
+        hints: list[str] = []
 
-        body: dict[str, Any] = {
-            "customer_name": customer.name,
-            "customer_type": "Company",
-            "customer_group": self.config.default_customer_group,
-            "territory": self.config.default_territory,
-        }
-        # Tax ID: preferimos eu_vat (intracom) si existe, sino tax_id local
-        if customer.eu_vat:
-            body["tax_id"] = customer.eu_vat
-        elif customer.tax_id:
-            body["tax_id"] = customer.tax_id
-        if customer.email:
-            body["email_id"] = customer.email
+        # 1. Por tax_id exacto (eu_vat o cif/nif)
+        for tax_value in (customer.eu_vat, customer.tax_id):
+            if not tax_value:
+                continue
+            normalized_tax = tax_value.replace(" ", "").upper()
+            hints.append(f"tax_id={normalized_tax}")
+            for raw in (tax_value, normalized_tax):
+                results = self._get_list(
+                    "Customer", filters=[["tax_id", "=", raw]], fields=["name"]
+                )
+                if results:
+                    return results[0]["name"]
 
-        r = self._post("/api/resource/Customer", body)
-        return r.json()["data"]["name"]
+        # 2. Por customer_name exacto
+        hints.append(f"customer_name='{customer.name}'")
+        results = self._get_list(
+            "Customer", filters=[["customer_name", "=", customer.name]], fields=["name"]
+        )
+        if results:
+            return results[0]["name"]
+
+        # 3. Por customer_name normalizado (busca con `like` por si en el ERP
+        # está con sufijo social que el PDF no trae, o viceversa).
+        normalized = _normalize_company_name(customer.name)
+        hints.append(f"normalized='{normalized}'")
+        if normalized:  # evita LIKE '%%' si el nombre era solo sufijos (raro)
+            results = self._get_list(
+                "Customer",
+                filters=[["customer_name", "like", f"%{normalized}%"]],
+                fields=["name", "customer_name"],
+            )
+            for r in results:
+                if _normalize_company_name(r["customer_name"]) == normalized:
+                    return r["name"]
+
+        raise CustomerNotRegisteredError(customer_name=customer.name, lookup_hints=hints)
 
     def _ensure_item(self, line: CanonicalLine) -> str:
         """Garantiza que el Item existe; si no, crea uno minimal (no-stock)."""
@@ -394,3 +424,56 @@ class ERPNextAdapter:
         if 500 <= r.status_code < 600:
             raise TransientError(f"{r.status_code} on {path}: {body_excerpt}")
         raise ValidationError(f"unexpected {r.status_code} on {path}: {body_excerpt}")
+
+
+# =============================================================================
+# Helpers de normalización
+# =============================================================================
+
+# Sufijos sociales que aparecen al final de razones sociales y NO discriminan
+# entre empresas distintas (Rubix Nord vs Rubix Nord SAS son la misma).
+# Los comparamos sin puntos ni comas para que "S.A.U." == "SAU".
+_COMPANY_SUFFIXES = {
+    "sas",
+    "sarl",
+    "sa",
+    "sl",
+    "slu",
+    "sau",
+    "sasu",
+    "gmbh",
+    "ag",
+    "ug",
+    "ltd",
+    "ltda",
+    "inc",
+    "llc",
+    "lp",
+    "llp",
+    "bv",
+    "nv",
+    "spa",
+    "srl",
+    "oy",
+    "ab",
+}
+
+
+def _normalize_company_name(name: str) -> str:
+    """Normaliza una razón social para comparaciones aproximadas.
+
+    - lowercase
+    - quita espacios extra
+    - quita sufijos sociales finales (SAS, SARL, SA, SL, SLU, SAU, S.A.U., GmbH...)
+      ignorando puntuación.
+    """
+    s = " ".join(name.lower().strip().split())
+    parts = s.split()
+    while parts:
+        # Quitar puntos y comas para comparar contra el set
+        stripped = parts[-1].replace(".", "").replace(",", "")
+        if stripped in _COMPANY_SUFFIXES:
+            parts.pop()
+        else:
+            break
+    return " ".join(parts)

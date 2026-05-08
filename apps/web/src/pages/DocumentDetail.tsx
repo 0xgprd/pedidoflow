@@ -26,7 +26,7 @@ import { Button } from "@/components/ui/button";
 import { PDFViewer, bgClassForPath, type Highlight } from "@/components/PDFViewer";
 import { AssignToConceptModal } from "@/components/AssignToConceptModal";
 import { AddCustomFieldModal } from "@/components/AddCustomFieldModal";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import type {
   ComparisonResult,
   Confianza,
@@ -280,6 +280,13 @@ export function DocumentDetail() {
     }
   };
 
+  // Si el último intento de push falló por cliente no dado de alta, guardamos
+  // los datos del cliente para mostrar el panel "Dar de alta cliente".
+  const [customerNotRegistered, setCustomerNotRegistered] = useState<{
+    customer_name: string;
+    message: string;
+  } | null>(null);
+
   const handlePushToErp = async () => {
     if (!id || !doc) return;
     if (
@@ -295,11 +302,28 @@ export function DocumentDetail() {
     }
     setSaving(true);
     setError(null);
+    setCustomerNotRegistered(null);
     try {
       const updated = await api.pushToErp(id);
       setDoc(updated);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      // Caso especial: cliente no dado de alta → panel específico, no error rojo
+      if (e instanceof ApiError && e.code === "customer_not_registered") {
+        const detail = e.detail as { customer_name: string; message: string };
+        setCustomerNotRegistered({
+          customer_name: detail.customer_name,
+          message: detail.message,
+        });
+        // Refrescamos doc para que el panel inferior muestre erp_push_error
+        try {
+          const fresh = await api.getDocument(id);
+          setDoc(fresh);
+        } catch {
+          /* ignore */
+        }
+      } else {
+        setError(e instanceof Error ? e.message : String(e));
+      }
     } finally {
       setSaving(false);
     }
@@ -489,6 +513,15 @@ export function DocumentDetail() {
             </div>
           )}
         </div>
+      )}
+
+      {/* Cliente no dado de alta — caso especial con call-to-action específico */}
+      {customerNotRegistered && (
+        <CustomerNotRegisteredPanel
+          customerName={customerNotRegistered.customer_name}
+          message={customerNotRegistered.message}
+          onDismiss={() => setCustomerNotRegistered(null)}
+        />
       )}
 
       {/* Estado del push al ERP (solo pedidos: si se empujó OK o si falló). */}
@@ -1275,6 +1308,51 @@ function ConfianzaBadge({ confianza }: { confianza: Confianza }) {
     >
       {labels[confianza]}
     </span>
+  );
+}
+
+// =============================================================================
+// Panel "Cliente no dado de alta" — se muestra cuando el push falla por
+// CustomerNotRegisteredError. Lleva al user a la acción correcta (dar de alta)
+// en vez de tratarlo como error técnico.
+// =============================================================================
+
+function CustomerNotRegisteredPanel({
+  customerName,
+  message,
+  onDismiss,
+}: {
+  customerName: string;
+  message: string;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="rounded-lg border border-amber-300 bg-amber-50 p-4">
+      <div className="flex items-start gap-3">
+        <AlertTriangle className="h-5 w-5 text-amber-700 mt-0.5 shrink-0" />
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-semibold text-amber-900">
+            Cliente no dado de alta: {customerName}
+          </div>
+          <p className="mt-1 text-sm text-amber-900/90">{message}</p>
+          <div className="mt-3 flex items-center gap-2">
+            <Link
+              to="/clientes/alta"
+              className="inline-flex items-center gap-1.5 rounded-md bg-amber-600 hover:bg-amber-700 text-white text-sm px-3 py-1.5 font-medium"
+            >
+              <Plus className="h-4 w-4" />
+              Dar de alta cliente
+            </Link>
+            <button
+              onClick={onDismiss}
+              className="text-sm text-amber-900/70 hover:text-amber-900 px-2 py-1.5"
+            >
+              Cerrar
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 

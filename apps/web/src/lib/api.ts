@@ -62,6 +62,31 @@ async function authHeaders(): Promise<Record<string, string>> {
   return tenantId ? { "X-Tenant-Id": tenantId } : {};
 }
 
+/** Error con detail estructurado del backend (HTTPException con detail=dict).
+ *  Permite a la UI distinguir errores de negocio (e.g. customer_not_registered)
+ *  y mostrar acciones específicas. */
+export class ApiError extends Error {
+  status: number;
+  detail: unknown;
+  constructor(status: number, detail: unknown, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
+
+  /** Si detail es un objeto con `code`, devuelve ese code. Útil para
+   *  switching en la UI sin tener que matchear strings.
+   *  e.g. `if (e.code === 'customer_not_registered') ...`. */
+  get code(): string | null {
+    if (typeof this.detail === "object" && this.detail !== null && "code" in this.detail) {
+      const c = (this.detail as { code: unknown }).code;
+      return typeof c === "string" ? c : null;
+    }
+    return null;
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const isFormData = init?.body instanceof FormData;
   const auth = await authHeaders();
@@ -74,8 +99,29 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (!res.ok) {
+    const contentType = res.headers.get("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      const body = (await res.json()) as { detail?: unknown };
+      const detail = body.detail ?? body;
+      // Construye un mensaje legible: si detail es objeto con .message lo usa,
+      // si es string lo usa, sino JSON.stringify.
+      let msg: string;
+      if (typeof detail === "string") {
+        msg = detail;
+      } else if (
+        typeof detail === "object" &&
+        detail !== null &&
+        "message" in detail &&
+        typeof (detail as { message: unknown }).message === "string"
+      ) {
+        msg = (detail as { message: string }).message;
+      } else {
+        msg = JSON.stringify(detail);
+      }
+      throw new ApiError(res.status, detail, msg);
+    }
     const text = await res.text();
-    throw new Error(`API ${res.status}: ${text}`);
+    throw new ApiError(res.status, text, `API ${res.status}: ${text}`);
   }
   return res.json() as Promise<T>;
 }

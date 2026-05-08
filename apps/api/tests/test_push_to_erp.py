@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from app.models.document import Document, DocumentStatus, DocumentType
 from app.services.erp import (
     AuthError,
+    CustomerNotRegisteredError,
     ERPAdapterError,
     PushResult,
     TransientError,
@@ -399,3 +400,34 @@ def test_push_other_tenant_doc_returns_404(
         headers=_auth_headers(tid_a),
     )
     assert r.status_code == 404
+
+
+def test_customer_not_registered_returns_409_with_structured_detail(
+    client: TestClient, tenant_id: UUID, fake_adapter_factory, session: Any
+) -> None:
+    """Cliente no dado de alta → 409 con detail estructurado para que la UI
+    muestre acción específica ('Dar de alta cliente')."""
+    fake_adapter_factory(
+        raises=CustomerNotRegisteredError(
+            customer_name="RUBIX Nord",
+            lookup_hints=["tax_id=FR65320955396", "customer_name='RUBIX Nord'"],
+        )
+    )
+    doc_id = _make_approved_pedido(session, tenant_id)
+
+    r = client.post(
+        f"/api/v1/documents/{doc_id}/push-to-erp",
+        headers=_auth_headers(tenant_id),
+    )
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert detail["code"] == "customer_not_registered"
+    assert detail["customer_name"] == "RUBIX Nord"
+    assert "alta" in detail["message"].lower()
+    assert len(detail["lookup_hints"]) == 2
+
+    # erp_push_error guardado en DB con prefijo identificable
+    doc = session.get(Document, doc_id)
+    session.refresh(doc)
+    assert doc.erp_push_error is not None
+    assert doc.erp_push_error.startswith("customer_not_registered:")

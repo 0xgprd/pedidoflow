@@ -47,7 +47,24 @@ class AuthError(ERPAdapterError):
 
 
 class NotFoundError(ERPAdapterError):
-    """Cliente o producto referenciado no existe en el ERP."""
+    """Recurso referenciado no existe en el ERP."""
+
+
+class CustomerNotRegisteredError(NotFoundError):
+    """El cliente referenciado en el documento no está dado de alta en el ERP.
+
+    Subclase específica de NotFoundError porque el flujo de remediación es
+    distinto: no es un error técnico, es un estado de negocio normal — hay
+    que dar de alta al cliente primero (con una ficha de alta).
+    """
+
+    def __init__(self, *, customer_name: str, lookup_hints: list[str]) -> None:
+        self.customer_name = customer_name
+        self.lookup_hints = lookup_hints
+        super().__init__(
+            f"Cliente '{customer_name}' no está dado de alta en el ERP. "
+            f"Búsqueda intentada por: {', '.join(lookup_hints)}."
+        )
 
 
 class ValidationError(ERPAdapterError):
