@@ -9,6 +9,7 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 # El .env vive en la raíz del monorepo en local (4 niveles arriba). En Docker
 # (Railway) no existe — las env vars vienen del entorno del proceso directamente.
 # Si el path no existe o no se puede calcular, pydantic-settings solo lee del env.
@@ -92,6 +93,18 @@ class Settings(BaseSettings):
     ms_graph_scopes: str = Field(default="Mail.Read offline_access User.Read")
     # URL del frontend para redirigir tras callback exitoso/fallido
     ms_graph_post_callback_url: str = Field(default="http://localhost:5173/integrations")
+
+    # --- ERPNext (open source ERP, sandbox local o cloud) ---
+    erpnext_base_url: str = Field(default="")
+    erpnext_api_key: str = Field(default="")
+    erpnext_api_secret: str = Field(default="")
+    erpnext_default_company: str = Field(default="")
+    erpnext_default_currency: str = Field(default="EUR")
+    erpnext_default_customer_group: str = Field(default="Commercial")
+    erpnext_default_territory: str = Field(default="Spain")
+    erpnext_default_item_group: str = Field(default="All Item Groups")
+    erpnext_default_stock_uom: str = Field(default="Nos")
+    erpnext_timeout_seconds: float = Field(default=30.0)
 
     # --- Sage 200 ---
     sage200_base_url: str = Field(default="https://sage200.sage.es/api/sales")
