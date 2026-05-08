@@ -24,6 +24,19 @@ from app.models.document import (
 from app.models.document_link import DocumentLink, DocumentLinkRead, MatchStrategy
 from app.models.workflow_rule import WorkflowRule
 from app.services.classification import classify_document
+from app.services.erp import (
+    AuthError,
+    ERPAdapterError,
+    TransientError,
+    extracted_to_sales_order,
+    get_erp_adapter,
+)
+from app.services.erp import (
+    NotFoundError as ERPNotFoundError,
+)
+from app.services.erp import (
+    ValidationError as ERPValidationError,
+)
 from app.services.matching import compare_order_vs_offer, find_matching_offer
 from app.services.rules_engine import evaluate_rules
 from app.services.storage import get_storage_service
@@ -813,5 +826,131 @@ def patch_status(
         "document.status.patched",
         document_id=str(document_id),
         new_status=payload.status,
+    )
+    return doc
+
+
+# =============================================================================
+# Push a ERP (capa erp/)
+# =============================================================================
+
+
+@router.post("/{document_id}/push-to-erp", response_model=DocumentRead)
+def push_document_to_erp(
+    document_id: UUID,
+    tenant_id: Annotated[UUID, Depends(get_current_tenant_id)],
+    session: Annotated[Session, Depends(get_session)],
+) -> Document:
+    """Empuja el documento al ERP configurado (hoy: ERPNext).
+
+    Requiere `status=approved` y `document_type=pedido`. El push se considera
+    éxito si el ERP devuelve un ID; el documento queda en estado `Draft` en el
+    ERP — el usuario lo confirma allí manualmente.
+
+    Es **idempotente desde la perspectiva del usuario**: re-pulsar crea un
+    Sales Order nuevo cada vez (no actualiza el anterior). Esto es deliberado
+    — re-pushing tras corregir datos es válido. Si quieres deduplicar, primero
+    cancela el SO viejo en el ERP.
+    """
+    doc = session.get(Document, document_id)
+    if doc is None or doc.tenant_id != tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    if doc.document_type != DocumentType.PEDIDO:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Solo se pueden empujar pedidos al ERP. Tipo actual: {doc.document_type}. "
+                "Si es un pedido mal clasificado, cambia el tipo desde el detalle del documento."
+            ),
+        )
+    if doc.status != DocumentStatus.APPROVED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"El pedido debe estar en estado 'approved' para empujarlo al ERP. "
+                f"Estado actual: {doc.status}."
+            ),
+        )
+    if not doc.extracted_json:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Documento sin datos extraídos — no hay nada que empujar.",
+        )
+
+    adapter = get_erp_adapter()
+    if adapter is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "No hay ERP configurado en el servidor. Configura las variables "
+                "ERPNEXT_BASE_URL, ERPNEXT_API_KEY, ERPNEXT_API_SECRET y "
+                "ERPNEXT_DEFAULT_COMPANY en el .env."
+            ),
+        )
+
+    # 1. Mapping a modelo canónico
+    try:
+        canonical = extracted_to_sales_order(document_id=doc.id, extracted=doc.extracted_json)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Datos del pedido insuficientes para empujar al ERP: {e}",
+        ) from e
+
+    # 2. Push y manejo de errores tipados
+    try:
+        result = adapter.push_sales_order(canonical)
+    except AuthError as e:
+        # Error de credenciales: NO marcamos doc.erp_push_error porque es global
+        log.error("erp.push.auth_error", document_id=str(document_id), error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Credenciales del ERP rechazadas. Revisa ERPNEXT_API_KEY/SECRET.",
+        ) from e
+    except (ERPNotFoundError, ERPValidationError) as e:
+        # Error semántico del ERP — guardamos para diagnóstico
+        doc.erp_push_error = f"{type(e).__name__}: {e}"
+        doc.updated_at = datetime.now(UTC)
+        session.add(doc)
+        session.commit()
+        log.warning(
+            "erp.push.validation_error",
+            document_id=str(document_id),
+            error=str(e),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"El ERP rechazó el documento: {e}",
+        ) from e
+    except TransientError as e:
+        log.warning("erp.push.transient_error", document_id=str(document_id), error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"ERP temporalmente no disponible: {e}. Reintenta en unos segundos.",
+        ) from e
+    except ERPAdapterError as e:
+        log.exception("erp.push.adapter_error", document_id=str(document_id))
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Error al hablar con el ERP: {e}",
+        ) from e
+
+    # 3. Persistir resultado
+    doc.erp_adapter = adapter.name
+    doc.erp_id = result.erp_id
+    doc.erp_url = result.erp_url
+    doc.erp_pushed_at = datetime.now(UTC)
+    doc.erp_push_error = None
+    doc.updated_at = doc.erp_pushed_at
+    session.add(doc)
+    session.commit()
+    session.refresh(doc)
+
+    log.info(
+        "erp.push.ok",
+        document_id=str(document_id),
+        adapter=adapter.name,
+        erp_id=result.erp_id,
     )
     return doc

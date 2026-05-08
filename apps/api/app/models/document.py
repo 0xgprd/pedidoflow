@@ -87,6 +87,19 @@ class Document(TimestampMixin, table=True):
     # - True si tiene oferta vinculada con discrepancias
     has_discrepancies: bool = Field(default=False, nullable=False, index=True)
 
+    # ---- Push a ERP (capa erp/) ----
+    # Identificador estable del adapter usado (e.g. "erpnext", "sage200", "holded").
+    # None = nunca se ha empujado.
+    erp_adapter: str | None = Field(default=None, max_length=50)
+    # ID del documento creado en el ERP destino (e.g. "SAL-ORD-2026-00001").
+    erp_id: str | None = Field(default=None, max_length=200)
+    # URL para verlo/editarlo en la UI del ERP.
+    erp_url: str | None = Field(default=None, max_length=500)
+    # Cuándo se empujó por última vez.
+    erp_pushed_at: datetime | None = Field(default=None)
+    # Mensaje del último intento fallido. None tras un push exitoso.
+    erp_push_error: str | None = Field(default=None)
+
 
 class DocumentRead(SQLModel):
     """Schema completo (incluye extracted_json + raw_text). Usar en GET por ID."""
@@ -103,6 +116,11 @@ class DocumentRead(SQLModel):
     extraction_error: str | None
     has_blocking_issues: bool
     has_discrepancies: bool
+    erp_adapter: str | None
+    erp_id: str | None
+    erp_url: str | None
+    erp_pushed_at: datetime | None
+    erp_push_error: str | None
     created_at: datetime
     updated_at: datetime
     processed_at: datetime | None

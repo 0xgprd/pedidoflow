@@ -18,6 +18,8 @@ import {
   Sparkles,
   ShieldX,
   Workflow as WorkflowIcon,
+  Send,
+  ExternalLink,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -278,6 +280,31 @@ export function DocumentDetail() {
     }
   };
 
+  const handlePushToErp = async () => {
+    if (!id || !doc) return;
+    if (
+      doc.erp_id &&
+      !confirm(
+        `Este pedido ya se empujó al ERP como ${doc.erp_id}. ` +
+          "Empujarlo de nuevo creará un Sales Order DUPLICADO. " +
+          "Si quieres re-pushear, primero cancela el SO antiguo en el ERP.\n\n" +
+          "¿Continuar de todas formas?",
+      )
+    ) {
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const updated = await api.pushToErp(id);
+      setDoc(updated);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   // ---- Render ----
 
   if (error && !doc) {
@@ -398,38 +425,62 @@ export function DocumentDetail() {
               decisión humana. Sólo pedidos muestran los botones aprobar/rechazar. */}
           {doc.document_type === "pedido" && (
             <div className="ml-auto flex gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                className="border-red-300 text-red-700 hover:bg-red-50"
-                onClick={handleReject}
-                disabled={saving}
-              >
-                <X className="h-4 w-4 mr-1" /> Rechazar
-              </Button>
-              <Button
-                size="sm"
-                className={cn(
-                  "text-white",
-                  draft.workflow?.blocked
-                    ? "bg-zinc-400 hover:bg-zinc-400 cursor-not-allowed"
-                    : "bg-emerald-600 hover:bg-emerald-700",
-                )}
-                onClick={handleApprove}
-                disabled={saving || !!draft.workflow?.blocked}
-                title={
-                  draft.workflow?.blocked
-                    ? "Aprobación bloqueada por regla(s) workflow"
-                    : "Aprobar pedido"
-                }
-              >
-                {draft.workflow?.blocked ? (
-                  <ShieldX className="h-4 w-4 mr-1" />
-                ) : (
-                  <Check className="h-4 w-4 mr-1" />
-                )}
-                {draft.workflow?.blocked ? "Bloqueado" : "Aprobar"}
-              </Button>
+              {doc.status === "approved" ? (
+                /* Pedido ya aprobado — la acción ahora es empujar al ERP. */
+                <Button
+                  size="sm"
+                  className="bg-violet-600 hover:bg-violet-700 text-white"
+                  onClick={handlePushToErp}
+                  disabled={saving}
+                  title={
+                    doc.erp_id
+                      ? `Ya empujado como ${doc.erp_id}. Re-pushear creará un duplicado.`
+                      : "Crear pedido en el ERP"
+                  }
+                >
+                  <Send className="h-4 w-4 mr-1" />
+                  {saving
+                    ? "Empujando..."
+                    : doc.erp_id
+                      ? "Re-empujar al ERP"
+                      : "Empujar al ERP"}
+                </Button>
+              ) : (
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-red-300 text-red-700 hover:bg-red-50"
+                    onClick={handleReject}
+                    disabled={saving}
+                  >
+                    <X className="h-4 w-4 mr-1" /> Rechazar
+                  </Button>
+                  <Button
+                    size="sm"
+                    className={cn(
+                      "text-white",
+                      draft.workflow?.blocked
+                        ? "bg-zinc-400 hover:bg-zinc-400 cursor-not-allowed"
+                        : "bg-emerald-600 hover:bg-emerald-700",
+                    )}
+                    onClick={handleApprove}
+                    disabled={saving || !!draft.workflow?.blocked}
+                    title={
+                      draft.workflow?.blocked
+                        ? "Aprobación bloqueada por regla(s) workflow"
+                        : "Aprobar pedido"
+                    }
+                  >
+                    {draft.workflow?.blocked ? (
+                      <ShieldX className="h-4 w-4 mr-1" />
+                    ) : (
+                      <Check className="h-4 w-4 mr-1" />
+                    )}
+                    {draft.workflow?.blocked ? "Bloqueado" : "Aprobar"}
+                  </Button>
+                </>
+              )}
             </div>
           )}
           {doc.document_type === "oferta" && (
@@ -438,6 +489,11 @@ export function DocumentDetail() {
             </div>
           )}
         </div>
+      )}
+
+      {/* Estado del push al ERP (solo pedidos: si se empujó OK o si falló). */}
+      {doc.document_type === "pedido" && (doc.erp_id || doc.erp_push_error) && (
+        <ErpPushStatusPanel doc={doc} />
       )}
 
       {/* Layout 50/50 */}
@@ -1220,6 +1276,73 @@ function ConfianzaBadge({ confianza }: { confianza: Confianza }) {
       {labels[confianza]}
     </span>
   );
+}
+
+// =============================================================================
+// Panel estado del push al ERP — solo si se ha intentado empujar
+// =============================================================================
+
+function ErpPushStatusPanel({ doc }: { doc: DocumentRead }) {
+  // Caso 1: push exitoso — id presente, error null
+  if (doc.erp_id && !doc.erp_push_error) {
+    const dateLabel = doc.erp_pushed_at
+      ? new Date(doc.erp_pushed_at).toLocaleString("es-ES")
+      : null;
+    return (
+      <div className="rounded-lg border border-emerald-300 bg-emerald-50 p-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-emerald-900 flex items-center gap-1.5">
+              <Send className="h-4 w-4" />
+              Empujado al ERP
+              {doc.erp_adapter && (
+                <span className="text-xs font-normal text-emerald-800/70">
+                  · {doc.erp_adapter}
+                </span>
+              )}
+            </div>
+            <div className="mt-1 text-xs text-emerald-900/80 font-mono break-all">
+              {doc.erp_id}
+            </div>
+            {dateLabel && (
+              <div className="mt-0.5 text-xs text-emerald-800/70">{dateLabel}</div>
+            )}
+          </div>
+          {doc.erp_url && (
+            <a
+              href={doc.erp_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-sm text-emerald-900 hover:underline shrink-0"
+            >
+              Ver en el ERP
+              <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Caso 2: último intento falló
+  if (doc.erp_push_error) {
+    return (
+      <div className="rounded-lg border border-red-300 bg-red-50 p-4">
+        <div className="text-sm font-medium text-red-900 flex items-center gap-1.5 mb-1">
+          <AlertTriangle className="h-4 w-4" />
+          Error empujando al ERP
+        </div>
+        <pre className="text-xs text-red-800 whitespace-pre-wrap font-mono break-all">
+          {doc.erp_push_error}
+        </pre>
+        <p className="mt-2 text-xs text-red-900/80">
+          Revisa el detalle, corrige y vuelve a pulsar "Empujar al ERP".
+        </p>
+      </div>
+    );
+  }
+
+  return null;
 }
 
 // =============================================================================

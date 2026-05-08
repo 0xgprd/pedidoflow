@@ -171,6 +171,16 @@ export interface DocumentRead {
   source_email: string | null;
   extracted_json: ExtractionData | null;
   extraction_error: string | null;
+  /** Identificador del adapter usado al empujar al ERP (e.g. "erpnext"). */
+  erp_adapter: string | null;
+  /** ID del documento creado en el ERP destino (e.g. "SAL-ORD-2026-00001"). */
+  erp_id: string | null;
+  /** URL para verlo en la UI del ERP. */
+  erp_url: string | null;
+  /** Fecha del último push exitoso. ISO 8601. */
+  erp_pushed_at: string | null;
+  /** Mensaje del último intento fallido. null tras un push exitoso. */
+  erp_push_error: string | null;
   created_at: string;
   updated_at: string;
   processed_at: string | null;
@@ -285,6 +295,11 @@ export const api = {
     request<DocumentRead>(`/api/v1/documents/${id}/status`, {
       method: "PATCH",
       body: JSON.stringify({ status, reason }),
+    }),
+  pushToErp: (id: string) =>
+    request<DocumentRead>(`/api/v1/documents/${id}/push-to-erp`, {
+      method: "POST",
+      body: "{}",
     }),
   reclassify: (onlyUnknown = true) =>
     request<{

@@ -53,6 +53,7 @@ storage_local/
 # Client data (catalog CSVs, scratch SQL, debug scripts)
 Price List*.csv
 _*.py
+!__init__.py
 _*.sql
 *.db
 *.sqlite
