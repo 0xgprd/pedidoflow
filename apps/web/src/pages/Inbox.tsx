@@ -11,6 +11,9 @@ import {
   ShieldX,
   Link2Off,
   Send,
+  UserPlus,
+  Truck,
+  Receipt,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -43,6 +46,21 @@ const STATUS_BADGE: Record<DocumentStatus, string> = {
 const TYPE_BADGE: Record<DocumentType, { label: string; cls: string; icon: typeof FileText }> = {
   pedido: { label: "Pedido", cls: "bg-sky-100 text-sky-900 border-sky-300", icon: FileText },
   oferta: { label: "Oferta", cls: "bg-violet-100 text-violet-900 border-violet-300", icon: FileCheck2 },
+  ficha_cliente: {
+    label: "Ficha cliente",
+    cls: "bg-indigo-100 text-indigo-900 border-indigo-300",
+    icon: UserPlus,
+  },
+  albaran: {
+    label: "Albarán",
+    cls: "bg-emerald-100 text-emerald-900 border-emerald-300",
+    icon: Truck,
+  },
+  factura: {
+    label: "Factura",
+    cls: "bg-amber-100 text-amber-900 border-amber-300",
+    icon: Receipt,
+  },
   desconocido: { label: "?", cls: "bg-zinc-100 text-zinc-700 border-zinc-300", icon: HelpCircle },
 };
 
@@ -441,7 +459,14 @@ function TypeTabs({
   docs: DocumentListItem[];
 }) {
   const counts = useMemo(() => {
-    const c: Record<TypeFilter, number> = { pedido: 0, oferta: 0, desconocido: 0 };
+    const c: Record<TypeFilter, number> = {
+      pedido: 0,
+      oferta: 0,
+      ficha_cliente: 0,
+      albaran: 0,
+      factura: 0,
+      desconocido: 0,
+    };
     for (const d of docs) {
       const t = d.document_type ?? "desconocido";
       c[t] = (c[t] ?? 0) + 1;
@@ -449,11 +474,14 @@ function TypeTabs({
     return c;
   }, [docs]);
 
-  // "Sin clasificar" sólo aparece si hay alguno (o si está activo, para no
-  // dejar al usuario sin pestaña al cambiar a un tab vacío).
+  // Pestañas que siempre se ven; otras (ficha cliente, albarán, factura,
+  // desconocido) sólo aparecen si hay docs de ese tipo o si están activas.
   const tabs: Array<{ key: TypeFilter; label: string; alwaysShow: boolean }> = [
     { key: "pedido", label: "Pedidos", alwaysShow: true },
     { key: "oferta", label: "Ofertas", alwaysShow: true },
+    { key: "ficha_cliente", label: "Fichas cliente", alwaysShow: false },
+    { key: "albaran", label: "Albaranes", alwaysShow: false },
+    { key: "factura", label: "Facturas", alwaysShow: false },
     { key: "desconocido", label: "Sin clasificar", alwaysShow: false },
   ];
 

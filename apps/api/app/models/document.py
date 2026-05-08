@@ -39,6 +39,13 @@ class DocumentStatus(StrEnum):
 class DocumentType(StrEnum):
     PEDIDO = "pedido"
     OFERTA = "oferta"
+    # Ficha de alta de cliente — entrada al flujo "registrar cliente en el ERP".
+    # Llega como PDF firmado por el cliente con sus datos completos (dirección,
+    # contactos, condiciones, VAT). Order Flow extrae la info y la sube al ERP
+    # como Customer + Address(es) + Contact(s) en una sola operación.
+    FICHA_CLIENTE = "ficha_cliente"
+    ALBARAN = "albaran"
+    FACTURA = "factura"
     DESCONOCIDO = "desconocido"
 
 

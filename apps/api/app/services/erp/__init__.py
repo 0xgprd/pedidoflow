@@ -22,18 +22,26 @@ from app.services.erp.adapter import (
     ValidationError,
 )
 from app.services.erp.canonical import (
+    CanonicalAddress,
+    CanonicalContact,
     CanonicalCustomer,
+    CanonicalCustomerRegistration,
     CanonicalDeliveryNote,
     CanonicalInvoice,
     CanonicalLine,
     CanonicalSalesOrder,
+    TaxCategory,
+    deduce_tax_category,
 )
 from app.services.erp.factory import get_erp_adapter
 from app.services.erp.mapping import extracted_to_sales_order
 
 __all__ = [
     "AuthError",
+    "CanonicalAddress",
+    "CanonicalContact",
     "CanonicalCustomer",
+    "CanonicalCustomerRegistration",
     "CanonicalDeliveryNote",
     "CanonicalInvoice",
     "CanonicalLine",
@@ -43,8 +51,10 @@ __all__ = [
     "ERPAdapterError",
     "NotFoundError",
     "PushResult",
+    "TaxCategory",
     "TransientError",
     "ValidationError",
+    "deduce_tax_category",
     "extracted_to_sales_order",
     "get_erp_adapter",
 ]

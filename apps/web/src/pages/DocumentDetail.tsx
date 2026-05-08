@@ -34,6 +34,7 @@ import type {
   DocumentLinkRead,
   DocumentRead,
   DocumentStatus,
+  DocumentType,
   ExtractedLinea,
   ExtractionData,
   MatchStrategy,
@@ -1462,13 +1463,28 @@ function DocumentTypeSelector({
   value,
   onChange,
 }: {
-  value: "pedido" | "oferta" | "desconocido";
-  onChange: (next: "pedido" | "oferta" | "desconocido") => void;
+  value: DocumentType;
+  onChange: (next: DocumentType) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const TYPES: Array<{ key: "pedido" | "oferta" | "desconocido"; label: string; cls: string }> = [
+  const TYPES: Array<{ key: DocumentType; label: string; cls: string }> = [
     { key: "pedido", label: "Pedido", cls: "bg-sky-100 text-sky-900 border-sky-300 hover:bg-sky-200" },
     { key: "oferta", label: "Oferta", cls: "bg-violet-100 text-violet-900 border-violet-300 hover:bg-violet-200" },
+    {
+      key: "ficha_cliente",
+      label: "Ficha cliente",
+      cls: "bg-indigo-100 text-indigo-900 border-indigo-300 hover:bg-indigo-200",
+    },
+    {
+      key: "albaran",
+      label: "Albarán",
+      cls: "bg-emerald-100 text-emerald-900 border-emerald-300 hover:bg-emerald-200",
+    },
+    {
+      key: "factura",
+      label: "Factura",
+      cls: "bg-amber-100 text-amber-900 border-amber-300 hover:bg-amber-200",
+    },
     { key: "desconocido", label: "?", cls: "bg-zinc-100 text-zinc-700 border-zinc-300 hover:bg-zinc-200" },
   ];
   const current = TYPES.find((t) => t.key === value)!;

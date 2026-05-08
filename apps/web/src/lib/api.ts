@@ -141,7 +141,13 @@ export type DocumentStatus =
   | "rejected";
 
 export type DocumentSource = "upload" | "email";
-export type DocumentType = "pedido" | "oferta" | "desconocido";
+export type DocumentType =
+  | "pedido"
+  | "oferta"
+  | "ficha_cliente"
+  | "albaran"
+  | "factura"
+  | "desconocido";
 export type MatchStrategy =
   | "exact_offer_number"
   | "client_lines_similarity"
