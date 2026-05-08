@@ -7,6 +7,7 @@ import {
   Plug,
   Workflow,
   LogOut,
+  Users,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -15,10 +16,11 @@ import { useAuth } from "@/lib/AuthContext";
 const navItems = [
   { to: "/dashboard", label: "Inicio", icon: HomeIcon },
   { to: "/inbox", label: "Bandeja", icon: Inbox },
+  { to: "/clientes", label: "Clientes", icon: Users },
+  { to: "/catalog", label: "Catálogo", icon: BookOpen },
   { to: "/memory", label: "Memoria", icon: Brain },
   { to: "/rules", label: "Reglas", icon: Workflow },
   { to: "/integrations", label: "Integraciones", icon: Plug },
-  { to: "/catalog", label: "Catálogo", icon: BookOpen },
 ];
 
 export function Layout() {

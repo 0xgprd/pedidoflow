@@ -6,6 +6,7 @@ from app.api import (
     auth,
     catalog_items,
     concepts,
+    customers,
     dashboard,
     documents,
     health,
@@ -28,3 +29,4 @@ api_router.include_router(catalog_items.router)
 api_router.include_router(workflow_rules.router)
 api_router.include_router(dashboard.router)
 api_router.include_router(vies.router)
+api_router.include_router(customers.router)

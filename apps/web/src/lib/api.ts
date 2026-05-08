@@ -802,6 +802,39 @@ export const viesApi = {
     ),
 };
 
+// =============================================================================
+// Customers — vista agregada de clientes que han pasado por Order Flow
+// =============================================================================
+
+export interface CustomerSummary {
+  key: string;
+  display_name: string;
+  eu_vat: string | null;
+  tax_id: string | null;
+  is_registered_in_erp: boolean;
+  erp_customer_id: string | null;
+  erp_customer_url: string | null;
+  registration_document_id: string | null;
+  pedidos_count: number;
+  pedidos_approved_count: number;
+  pedidos_pushed_to_erp_count: number;
+  ofertas_count: number;
+  fichas_count: number;
+  total_amount_approved: number;
+  currency: string;
+  last_activity_at: string | null;
+  first_seen_at: string | null;
+}
+
+export interface CustomerListResponse {
+  customers: CustomerSummary[];
+  total: number;
+}
+
+export const customersApi = {
+  list: () => request<CustomerListResponse>("/api/v1/customers"),
+};
+
 export const dashboardApi = {
   stats: () => request<DashboardStats>("/api/v1/dashboard/stats"),
 };

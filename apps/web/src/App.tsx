@@ -7,6 +7,7 @@ import { Inbox } from "@/pages/Inbox";
 import { DocumentDetail } from "@/pages/DocumentDetail";
 import { Home } from "@/pages/Home";
 import { Catalog } from "@/pages/Catalog";
+import { Customers } from "@/pages/Customers";
 import { Memory } from "@/pages/Memory";
 import { Integrations } from "@/pages/Integrations";
 import { Rules } from "@/pages/Rules";
@@ -31,6 +32,12 @@ export default function App() {
             <Route path="/dashboard" element={<Home />} />
             <Route path="/inbox" element={<Inbox />} />
             <Route path="/inbox/:id" element={<DocumentDetail />} />
+            <Route path="/clientes" element={<Customers />} />
+            {/* /clientes/alta es atajo a las fichas pendientes en bandeja */}
+            <Route
+              path="/clientes/alta"
+              element={<Inbox />}
+            />
             <Route path="/catalog" element={<Catalog />} />
             <Route path="/memory" element={<Memory />} />
             <Route path="/rules" element={<Rules />} />
