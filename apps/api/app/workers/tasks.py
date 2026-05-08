@@ -28,7 +28,7 @@ from app.models.email_integration import EmailIntegration, IntegrationStatus
 from app.models.tenant_field import TenantField
 from app.models.workflow_rule import WorkflowRule
 from app.services import msgraph
-from app.services.classification import classify_document
+from app.services.classification import classify_by_filename, classify_document
 from app.services.concepts import apply_concepts, increment_hits
 from app.services.extraction import ExtractionError, ExtractionService
 from app.services.matching import compare_order_vs_offer, find_matching_offer
@@ -74,6 +74,15 @@ def extract_document(self, document_id: str) -> dict:
         session.refresh(doc)
 
         pdf_key = doc.pdf_key
+        original_filename_for_pre = doc.original_filename
+        tenant_id_for_pre = doc.tenant_id
+
+    # Pre-clasificación por filename SOLO para detectar fichas de alta. Las
+    # fichas usan un prompt distinto (datos de cliente, no de pedido) y saltan
+    # los pasos de catalog/workflow (no aplican). Para pedidos/ofertas seguimos
+    # el flujo normal y la clasificación final ocurre tras la extracción.
+    pre_type = classify_by_filename(original_filename_for_pre)
+    is_registration = pre_type == DocumentType.FICHA_CLIENTE
 
     try:
         # 1. Descargar PDF
@@ -84,6 +93,57 @@ def extract_document(self, document_id: str) -> dict:
         ocr_provider = get_ocr_provider()
         ocr_result = ocr_provider.extract(pdf_bytes)
         markdown = ocr_result.full_markdown
+
+        # ============ FLUJO ESPECIAL: FICHA DE ALTA DE CLIENTE ============
+        if is_registration:
+            service = ExtractionService()
+            registration_data = service.extract_customer_registration(markdown)
+
+            # Auto-deducir tax_category si no la trajo Claude
+            from app.services.erp.canonical import deduce_tax_category
+
+            if not registration_data.get("tax_category"):
+                fiscal = registration_data.get("fiscal_address") or {}
+                registration_data["tax_category"] = deduce_tax_category(
+                    eu_vat=registration_data.get("eu_vat"),
+                    tax_id=registration_data.get("tax_id"),
+                    country=fiscal.get("country") if isinstance(fiscal, dict) else None,
+                )
+
+            # Persistir como FICHA_CLIENTE — el JSON va en extracted_json con
+            # estructura propia (no la de pedido). La UI lo distingue por
+            # document_type y muestra la vista de alta en lugar del editor de
+            # líneas.
+            with Session(engine) as session:
+                doc = session.get(Document, doc_uuid)
+                if doc is None:
+                    return {"status": "lost", "document_id": document_id}
+                doc.ocr_result = ocr_result.model_dump(mode="json")
+                doc.raw_text = markdown
+                doc.extracted_json = registration_data
+                doc.document_type = DocumentType.FICHA_CLIENTE
+                doc.status = DocumentStatus.EXTRACTED  # requiere revisión humana
+                doc.has_blocking_issues = False
+                doc.processed_at = datetime.now(UTC)
+                doc.updated_at = doc.processed_at
+                session.add(doc)
+                session.commit()
+
+            log.info(
+                "task.extract_document.registration_ok",
+                document_id=document_id,
+                company=registration_data.get("company_name"),
+                tax_category=registration_data.get("tax_category"),
+            )
+            return {
+                "status": "extracted",
+                "document_id": document_id,
+                "document_type": "ficha_cliente",
+                "company_name": registration_data.get("company_name"),
+            }
+        # =================== FIN FLUJO FICHA ===================
+
+        _ = tenant_id_for_pre  # silenciar lint si no se usa abajo
 
         # Cargar concepts del tenant + globales para extraer field_aliases
         # y los TenantField (campos custom dinámicos) para extender el prompt.

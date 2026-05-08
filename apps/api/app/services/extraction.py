@@ -358,3 +358,142 @@ class ExtractionService:
         except Exception as e:
             log.error("extraction.schema_validation_failed", error=str(e))
             raise ExtractionError(f"Schema validation failed: {e}") from e
+
+    # =========================================================================
+    # Extracción de fichas de alta de cliente — flujo separado del de pedidos
+    # =========================================================================
+
+    def extract_customer_registration(self, markdown: str) -> dict[str, Any]:
+        """Extrae los datos de una ficha de alta de cliente.
+
+        Devuelve un dict con la estructura que mapea a
+        `CanonicalCustomerRegistration` (sin source_document_id, que se añade
+        en el caller). Multi-idioma: la ficha puede estar en ES/FR/EN/DE.
+        """
+        from anthropic import Anthropic
+
+        if not markdown.strip():
+            raise ExtractionError("Markdown vacío — el OCR no produjo texto")
+
+        client = Anthropic(api_key=self.api_key)
+
+        log.info("extraction.registration.start", markdown_chars=len(markdown))
+
+        system_blocks: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": REGISTRATION_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+        user_text = (
+            "Markdown de la ficha de alta de cliente (OCR Mistral). "
+            "Extrae el JSON siguiendo las reglas.\n\n"
+            f"```markdown\n{markdown}\n```"
+        )
+
+        try:
+            response = client.messages.create(
+                model=self.model,
+                max_tokens=2048,
+                system=system_blocks,
+                messages=[{"role": "user", "content": user_text}],
+            )
+        except Exception as e:
+            log.error("extraction.registration.api_error", error=str(e))
+            raise ExtractionError(f"Anthropic API error: {e}") from e
+
+        raw_text = "".join(
+            block.text for block in response.content if getattr(block, "type", None) == "text"
+        )
+        log.info(
+            "extraction.registration.api_ok",
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+        )
+
+        return self._parse_registration(raw_text)
+
+    @staticmethod
+    def _parse_registration(raw: str) -> dict[str, Any]:
+        text = raw.strip()
+        if text.startswith("```"):
+            text = text.removeprefix("```json").removeprefix("```").rstrip()
+            if text.endswith("```"):
+                text = text[:-3].rstrip()
+        try:
+            payload: dict[str, Any] = json.loads(text)
+        except json.JSONDecodeError as e:
+            log.error("extraction.registration.parse_failed", error=str(e), raw=raw[:500])
+            raise ExtractionError(f"Invalid JSON from model: {e}") from e
+        if not isinstance(payload, dict):
+            raise ExtractionError("Registration payload must be an object")
+        return payload
+
+
+REGISTRATION_PROMPT = """Eres un extractor de FICHAS DE ALTA DE CLIENTE en un sistema empresarial.
+
+Recibirás texto MARKDOWN extraído por OCR (Mistral) sobre un PDF que contiene una ficha
+de alta de cliente. La ficha puede estar en castellano, francés, inglés o alemán.
+
+Tu tarea: leer la ficha y devolver un JSON con los datos del cliente, siguiendo el
+esquema definido más abajo.
+
+REGLAS IMPORTANTES:
+- Devuelve SOLO el JSON, sin texto antes ni después, sin fences ```.
+- Si un campo NO aparece en la ficha, devuelve null. NO inventes nada.
+- Las fechas en formato ISO (YYYY-MM-DD).
+- VAT/Número de TVA: tal cual aparece en el documento, con o sin espacios.
+- "Supplier Nr." (Nº de proveedor) es el código que el CLIENTE asigna a la
+  empresa que hace la ficha (NO es el código del cliente). Ojo de no confundir.
+- Si hay dos direcciones (fiscal y de facturación) y son iguales, billing_address
+  puede ser null para evitar duplicación.
+
+ESQUEMA JSON:
+
+{
+  "company_name": "Razón social del cliente (string, requerido)",
+  "fiscal_name": "Razón social fiscal completa si distinta del nombre comercial (string|null)",
+  "tax_id": "CIF/NIF/NIE local sin código país (string|null)",
+  "eu_vat": "VAT intracomunitario con código país (FRxxxx, ESxxxx, ...) (string|null)",
+  "supplier_number_in_customer_system": "Código que el cliente nos ha asignado a NUESTRA empresa (string|null)",
+  "fiscal_address": {
+    "line1": "Calle + número o equivalente (string, requerido si hay dirección)",
+    "line2": "2ª línea (piso, edificio, polígono...) (string|null)",
+    "city": "Ciudad (string, requerido)",
+    "postal_code": "Código postal (string, requerido)",
+    "state_or_region": "Provincia / Département / Estado (string|null)",
+    "country": "Nombre del país (string, requerido)"
+  },
+  "billing_address": "Misma estructura que fiscal_address — null si es igual a la fiscal",
+  "shipping_address": "Misma estructura — null si no especificada",
+  "main_phone": "Teléfono principal con o sin formato (string|null)",
+  "secondary_phone": "Teléfono secundario (string|null)",
+  "fax": "Fax (string|null)",
+  "main_email": "Email principal de contacto a nivel empresa (string|null)",
+  "contacts": [
+    {
+      "name": "Nombre persona",
+      "role": "Función / cargo (string|null)",
+      "phone": "Teléfono (string|null)",
+      "email": "Email (string|null)"
+    }
+  ],
+  "payment_terms": "Condiciones de pago tal como aparecen en la ficha (string|null)",
+  "bank_account_iban": "IBAN si aparece — null si no (string|null)",
+  "preferred_language": "Idioma preferido del cliente, ISO 639-1 ('es','fr','en','de','it') (string|null)",
+  "signed_by_name": "Nombre del firmante de la ficha (string|null)",
+  "signed_by_role": "Función del firmante (string|null)",
+  "signature_date": "Fecha de firma en YYYY-MM-DD (string|null)"
+}
+
+EJEMPLOS DE PISTAS MULTI-IDIOMA:
+- "Nom de la societé" / "Nombre de empresa" / "Company name" → company_name
+- "Numero de TVA" / "Número de IVA intracomunitario" / "VAT" → eu_vat
+- "Adresse de facturation" / "Dirección de facturación" / "Billing address" → billing_address
+- "Conditions de paiement" / "Condiciones de pago" → payment_terms
+- "Virement bancaire 30 jours" → "Transferencia 30 días"
+- "Supplier Nr." / "Nº proveedor" / "Notre numéro fournisseur" → supplier_number_in_customer_system
+- "Cachet de l'entreprise" → la firma/sello — usa el nombre que aparezca debajo
+
+Devuelve SOLO el JSON. Nada más."""

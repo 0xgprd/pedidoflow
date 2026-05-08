@@ -1,8 +1,9 @@
-"""Clasificación pedido / oferta basada en heurísticas + sugerencia de Claude.
+"""Clasificación pedido / oferta / ficha cliente basada en heurísticas + sugerencia de Claude.
 
 Heurística filename (rápida, gratis, determinística):
 - Patrón `TL\\d{6}-\\d+` en el nombre → OFERTA Quimilock (las ofertas siempre
   llevan ese formato en el filename).
+- Keywords "registration", "alta cliente", "fiche client" → FICHA_CLIENTE
 - Keywords "Offre", "Devis", "Quote", "Oferta", "Cotización", "Presupuesto" → OFERTA
 - Keywords "Commande", "Order", "Pedido", "Purchase", "PO_", "_PO" → PEDIDO
 
@@ -45,6 +46,29 @@ ORDER_KEYWORDS = (
     "boncommande",
 )
 
+# Ficha de alta de cliente — palabras clave en filename que la identifican.
+# Multi-idioma porque las fichas de Quimilock vienen en FR/EN/ES.
+CUSTOMER_REGISTRATION_KEYWORDS = (
+    "customer registration",
+    "customer-registration",
+    "customer_registration",
+    "alta cliente",
+    "alta-cliente",
+    "alta_cliente",
+    "alta de cliente",
+    "ficha cliente",
+    "ficha-cliente",
+    "ficha_cliente",
+    "ficha de cliente",
+    "ficha de alta",
+    "fiche client",
+    "fiche-client",
+    "fiche_client",
+    "kundendaten",  # alemán
+    "kunden-erfassung",
+    "datos cliente",
+)
+
 
 def classify_by_filename(filename: str | None) -> DocumentType | None:
     """Devuelve el tipo si el filename es decisivo, None si ambiguo."""
@@ -57,7 +81,14 @@ def classify_by_filename(filename: str | None) -> DocumentType | None:
 
     name = filename.lower()
 
-    # 2. Keywords explícitas
+    # 2. Ficha de alta de cliente — chequear ANTES que pedido/oferta porque
+    # algunas fichas pueden contener la palabra "client" que también está en
+    # algunos filenames de pedidos.
+    has_registration_kw = any(kw in name for kw in CUSTOMER_REGISTRATION_KEYWORDS)
+    if has_registration_kw:
+        return DocumentType.FICHA_CLIENTE
+
+    # 3. Keywords explícitas pedido/oferta
     has_offer_kw = any(kw in name for kw in OFFER_KEYWORDS)
     has_order_kw = any(kw in name for kw in ORDER_KEYWORDS)
 
@@ -73,11 +104,17 @@ def classify_by_extracted_json(extracted_json: dict | None) -> DocumentType | No
     """Saca el tipo del JSON que devolvió Claude."""
     if not extracted_json:
         return None
-    raw = (extracted_json.get("document_type") or "").lower().strip()
+    raw = (extracted_json.get("document_type") or "").lower().strip().replace(" ", "_")
     if raw == "pedido":
         return DocumentType.PEDIDO
     if raw == "oferta":
         return DocumentType.OFERTA
+    if raw in ("ficha_cliente", "ficha_de_cliente", "alta_cliente", "customer_registration"):
+        return DocumentType.FICHA_CLIENTE
+    if raw == "albaran" or raw == "albarán":
+        return DocumentType.ALBARAN
+    if raw == "factura":
+        return DocumentType.FACTURA
     if raw == "desconocido":
         return DocumentType.DESCONOCIDO
     # También intentar deducir si tiene numero_oferta sin numero_pedido_cliente

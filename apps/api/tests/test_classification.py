@@ -45,6 +45,27 @@ def test_filename_offer_pattern_wins_over_order_keyword() -> None:
     assert classify_by_filename("TL260422-113-commande-fake.pdf") == DocumentType.OFERTA
 
 
+def test_filename_customer_registration_keywords() -> None:
+    """Fichas de alta de cliente — multi-idioma."""
+    assert (
+        classify_by_filename("QUIMILOCK Customer Registration Form_Fr.pdf")
+        == DocumentType.FICHA_CLIENTE
+    )
+    assert classify_by_filename("alta_cliente_rubix.pdf") == DocumentType.FICHA_CLIENTE
+    assert classify_by_filename("Ficha de alta - ATS.pdf") == DocumentType.FICHA_CLIENTE
+    assert classify_by_filename("fiche_client_evolis.pdf") == DocumentType.FICHA_CLIENTE
+    assert classify_by_filename("Datos cliente nuevo.pdf") == DocumentType.FICHA_CLIENTE
+
+
+def test_filename_registration_wins_over_other_keywords() -> None:
+    """Si el filename contiene 'alta cliente' tiene preferencia sobre 'pedido'
+    en el mismo nombre — caso raro pero posible."""
+    assert (
+        classify_by_filename("alta cliente para pedido futuro.pdf")
+        == DocumentType.FICHA_CLIENTE
+    )
+
+
 # =============================================================================
 # classify_document (filename + JSON)
 # =============================================================================
