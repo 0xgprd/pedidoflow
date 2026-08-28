@@ -11,15 +11,14 @@ Sincroniza la DB con los índices declarados en los modelos SQLModel:
   `ix_documents_document_type` (filtros más comunes son por tenant solo o por type solo).
 - Elimina `ix_concepts_name` (ya no útil; las búsquedas son por field_path o aliases).
 """
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 from alembic import op
 
-
 revision: str = "bd6011526c5c"
-down_revision: Union[str, Sequence[str], None] = "44f0620bb842"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "44f0620bb842"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 _TENANT_ID_INDEXES = [
